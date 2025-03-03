@@ -2397,6 +2397,14 @@
                     }
                 }
             }
+
+            // Update supply crates (for parachute animation)
+            for (let i = supplyCrates.length - 1; i >= 0; i--) {
+                const crate = supplyCrates[i];
+                if (crate.userData && crate.userData.animate) {
+                    crate.userData.animate(deltaTime);
+                }
+            }
         }
 
         // Radar update function
@@ -2717,6 +2725,9 @@
                 }
             } while (!validPosition);
 
+            // Create the crate with parachute - as a group
+            const crateGroup = new THREE.Group();
+
             // Create the crate model
             const crateSize = 2;
             const crateGeometry = new THREE.BoxGeometry(crateSize, crateSize, crateSize);
@@ -2727,9 +2738,9 @@
             });
 
             const crate = new THREE.Mesh(crateGeometry, crateMaterial);
-            crate.position.set(x, crateSize/2, z);
             crate.castShadow = true;
             crate.receiveShadow = true;
+            crateGroup.add(crate);
 
             // Add details to crate - logo/markings
             const detailGeometry = new THREE.PlaneGeometry(crateSize * 0.8, crateSize * 0.8);
@@ -2756,20 +2767,256 @@
                 crate.add(detail);
             });
 
-            // Add crate metadata
-            crate.userData = {
+            // Create parachute group
+            const parachuteGroup = new THREE.Group();
+            parachuteGroup.position.y = 4.5; // Position above crate
+            crateGroup.add(parachuteGroup);
+            
+            // Parachute parameters
+            const parachuteRadius = 4;
+            
+            // Create semi-sphere parachute
+            const sphereGeometry = new THREE.SphereGeometry(
+                parachuteRadius, 
+                32, 
+                16, 
+                0, 
+                Math.PI * 2, 
+                0, 
+                Math.PI / 2  // Only use the top half of the sphere
+            );
+            
+            // Create fabric texture with a canvas
+            const textureSize = 512;
+            const canvas = document.createElement('canvas');
+            canvas.width = textureSize;
+            canvas.height = textureSize;
+            const ctx = canvas.getContext('2d');
+            
+            // Fill with base color
+            ctx.fillStyle = '#FFD700'; // Gold to match your existing color scheme
+            ctx.fillRect(0, 0, textureSize, textureSize);
+            
+            // Add subtle fabric texture pattern
+            ctx.strokeStyle = '#E8C000'; // Slightly darker for texture lines
+            ctx.lineWidth = 1;
+            
+            // Draw horizontal lines for fabric texture
+            for (let i = 0; i < textureSize; i += 8) {
+                ctx.beginPath();
+                ctx.moveTo(0, i);
+                ctx.lineTo(textureSize, i);
+                ctx.stroke();
+            }
+            
+            // Draw vertical lines for a ripstop-like pattern
+            for (let i = 0; i < textureSize; i += 8) {
+                ctx.beginPath();
+                ctx.moveTo(i, 0);
+                ctx.lineTo(i, textureSize);
+                ctx.stroke();
+            }
+            
+            // Create texture from canvas
+            const fabricTexture = new THREE.CanvasTexture(canvas);
+            fabricTexture.wrapS = THREE.RepeatWrapping;
+            fabricTexture.wrapT = THREE.RepeatWrapping;
+            fabricTexture.repeat.set(4, 4);
+            
+            // Create the material
+            const sphereMaterial = new THREE.MeshStandardMaterial({ 
+                map: fabricTexture,
+                color: 0xFFD700, // Gold
+                side: THREE.DoubleSide,
+                transparent: true,
+                opacity: 0.9,
+                roughness: 0.35,
+                metalness: 0.1
+            });
+            
+            const semisphere = new THREE.Mesh(sphereGeometry, sphereMaterial);
+            parachuteGroup.add(semisphere);
+            
+            // Add four lines to divide the semi-sphere into 8 sections
+            const lineMaterial = new THREE.LineBasicMaterial({ 
+                color: 0x000000, 
+                linewidth: 2 
+            });
+            
+            // Line 1 (front to back)
+            const line1Geometry = new THREE.BufferGeometry().setFromPoints([
+                new THREE.Vector3(0, 0, -parachuteRadius),
+                new THREE.Vector3(0, 0, parachuteRadius)
+            ]);
+            const line1 = new THREE.Line(line1Geometry, lineMaterial);
+            parachuteGroup.add(line1);
+            
+            // Line 2 (left to right)
+            const line2Geometry = new THREE.BufferGeometry().setFromPoints([
+                new THREE.Vector3(-parachuteRadius, 0, 0),
+                new THREE.Vector3(parachuteRadius, 0, 0)
+            ]);
+            const line2 = new THREE.Line(line2Geometry, lineMaterial);
+            parachuteGroup.add(line2);
+            
+            // Line 3 (diagonal 1)
+            const line3Geometry = new THREE.BufferGeometry().setFromPoints([
+                new THREE.Vector3(-parachuteRadius * 0.7071, 0, -parachuteRadius * 0.7071),
+                new THREE.Vector3(parachuteRadius * 0.7071, 0, parachuteRadius * 0.7071)
+            ]);
+            const line3 = new THREE.Line(line3Geometry, lineMaterial);
+            parachuteGroup.add(line3);
+            
+            // Line 4 (diagonal 2)
+            const line4Geometry = new THREE.BufferGeometry().setFromPoints([
+                new THREE.Vector3(-parachuteRadius * 0.7071, 0, parachuteRadius * 0.7071),
+                new THREE.Vector3(parachuteRadius * 0.7071, 0, -parachuteRadius * 0.7071)
+            ]);
+            const line4 = new THREE.Line(line4Geometry, lineMaterial);
+            parachuteGroup.add(line4);
+            // --------- NEW PARACHUTE CODE ENDS ---------
+
+            // Add strings connecting from points on the semi-sphere to the crate
+            // Position strings at the division points created by the lines for a more consistent look
+            const stringMaterial = new THREE.LineBasicMaterial({ 
+                color: 0x333333,
+                linewidth: 1 // Note: THREE.js doesn't support variable line width well
+            });
+
+            // Better positions - aligned with the dividing lines
+            const stringPoints = [];
+
+            // Add string attachment points at each of the 8 sections created by the dividing lines
+            for (let i = 0; i < 8; i++) {
+                const angle = (i / 8) * Math.PI * 2 + Math.PI / 8; // Offset to align with divisions
+                stringPoints.push({
+                    x: parachuteRadius * Math.cos(angle),
+                    z: parachuteRadius * Math.sin(angle)
+                });
+            }
+
+            // Create strings using Line instead of Mesh for a more natural look
+            stringPoints.forEach(point => {
+                // Create a line from parachute to crate for each string
+                const stringGeometry = new THREE.BufferGeometry().setFromPoints([
+                    new THREE.Vector3(point.x, 0, point.z), // Point on the edge of parachute
+                    new THREE.Vector3(0, -4.5, 0) // Top center of crate
+                ]);
+                
+                const string = new THREE.Line(stringGeometry, stringMaterial);
+                parachuteGroup.add(string);
+            });
+
+            // Position the group in the world
+            crateGroup.position.set(x, 30, z); // Start high in the air
+
+            // Add crate metadata (to the group)
+            crateGroup.userData = {
                 type: 'supply_crate',
                 health: 30,
-                contents: getRandomCrateContents()  // Using new function for random contents
+                contents: getRandomCrateContents(),
+                // Animation state
+                falling: true,
+                fallSpeed: 0.15,
+                swingPhase: Math.random() * Math.PI * 2, // Random starting phase
+                swingAmplitude: 0.02,
+                groundY: crateSize/2, // Final Y position
+                parachuteGroup: [], // Will store parachute parts for detachment
+                animate: function(delta) {
+                    if (this.falling) {
+                        // Move downward
+                        crateGroup.position.y -= this.fallSpeed * delta;
+
+                        // Add gentle swinging motion
+                        const swing = Math.sin(Date.now() * 0.001 + this.swingPhase) * this.swingAmplitude * delta;
+                        crateGroup.rotation.x = swing;
+                        crateGroup.rotation.z = swing * 0.7;
+
+                        // Check if we've reached the ground
+                        if (crateGroup.position.y <= this.groundY) {
+                            crateGroup.position.y = this.groundY;
+                            this.falling = false;
+
+                            // Detach parachute and let it float away
+                            this.detachParachute();
+
+                            // Create landing effect
+                            createSupplyCrateEffect(crateGroup.position.clone());
+                        }
+                    }
+                },
+                detachParachute: function() {
+                    // Remove parachute and ropes from the group
+                    for (let i = crateGroup.children.length - 1; i >= 0; i--) {
+                        const child = crateGroup.children[i];
+                        // Keep only the crate mesh and its details
+                        if (child !== crate) {
+                            // Store reference to the parachute parts
+                            this.parachuteGroup.push(child);
+                            // Remove from crate group
+                            crateGroup.remove(child);
+                            // Add directly to scene for independent animation
+                            scene.add(child);
+
+                            // Position correctly in world space
+                            child.position.add(crateGroup.position);
+
+                            // Add floating animation to each detached part
+                            child.userData = {
+                                floatSpeed: 0.05 + Math.random() * 0.05,
+                                rotateSpeed: (Math.random() - 0.5) * 0.01,
+                                lifeTime: 0,
+                                maxLifeTime: 100 + Math.floor(Math.random() * 50)
+                            };
+                        }
+                    }
+
+                    // Start animation for detached parachute
+                    this.animateDetachedParachute();
+                },
+                animateDetachedParachute: function() {
+                    // Animation for making parachute float away
+                    const animateFloat = () => {
+                        let allRemoved = true;
+
+                        for (let i = this.parachuteGroup.length - 1; i >= 0; i--) {
+                            const part = this.parachuteGroup[i];
+
+                            // Float upward and slightly to the side
+                            part.position.y += part.userData.floatSpeed;
+                            part.position.x += Math.sin(Date.now() * 0.001) * 0.02;
+                            part.position.z += Math.cos(Date.now() * 0.001) * 0.02;
+
+                            // Add some rotation
+                            part.rotation.y += part.userData.rotateSpeed;
+
+                            // Fade out
+                            part.userData.lifeTime++;
+                            if (part.material && part.material.opacity) {
+                                part.material.opacity = Math.max(0, 1 - (part.userData.lifeTime / part.userData.maxLifeTime));
+                            }
+
+                            // Remove when it's faded out
+                            if (part.userData.lifeTime >= part.userData.maxLifeTime) {
+                                scene.remove(part);
+                                this.parachuteGroup.splice(i, 1);
+                            } else {
+                                allRemoved = false;
+                            }
+                        }
+
+                        if (!allRemoved) {
+                            requestAnimationFrame(animateFloat);
+                        }
+                    };
+
+                    animateFloat();
+                }
             };
 
-            scene.add(crate);
-            supplyCrates.push(crate);
-
-            // Create visual effect for crate landing
-            createSupplyCrateEffect(crate.position.clone());
-
-            return crate;
+            scene.add(crateGroup);
+            supplyCrates.push(crateGroup);
+            return crateGroup;
         }
 
         // Function to get random crate contents with appropriate probabilities
@@ -3669,4 +3916,3 @@
     </script>
 </body>
 </html>
-
