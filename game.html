@@ -165,6 +165,7 @@
             supplyCratesOpened: 0,    // Track supply crates opened
             powerupsCollected: 0      // Track power-ups collected
         };
+        const MAX_ENEMIES = 10;
 
         // Inventory system
         const inventory = {
@@ -372,6 +373,46 @@
                     size: 0.5
                 },
                 description: "Elite enemy tank with advanced AI and higher health"
+            },
+            BLUE: {
+                id: 'blue',
+                color: 0x0066FF, // Blue
+                health: 75,
+                speed: {
+                    acceleration: 0.01,
+                    deceleration: 0.98,
+                    maxSpeed: 0.08,
+                    maxAngularSpeed: 0.02
+                },
+                rotation: {
+                    speed: 0.015,  // Improved turning speed
+                    acceleration: 0.001,
+                    maxSpeed: 0.01
+                },
+                weapon: {
+                    fireRate: 2000, // Longer reload time than regular tanks
+                    damage: 25, // Each individual pellet does less damage
+                    pelletCount: 10, // Number of pellets in shotgun spread
+                    spreadAngle: 0.25, // Spread angle in radians (about 30 degrees)
+                    range: 20 // Shorter effective range
+                },
+                spawnChance: 0.001,
+                score: 20,  // Changed from scoreValue to score for consistency
+                ai: {
+                    directionChangeChance: 0.01,
+                    firingChance: 0.15, // Higher chance to fire when in range
+                    chasePlayerChance: 0.8, // Very aggressive in chasing the player
+                    optimalRange: 15 // Tries to get this close before firing
+                },
+                hitEffect: {
+                    color: 0x0066FF,
+                    size: 0.5
+                },
+                destroyEffect: {
+                    color: 0x00AAFF,
+                    size: 1.2
+                },
+                description: "Shotgun tank with spread fire pattern"  // Added description
             }
             // Future tank types can be added here
         };
@@ -1321,7 +1362,6 @@
                 health: config.health,
                 isPlayer: isPlayer,
                 direction: new THREE.Vector3(0, 0, 1),
-                turretDirection: new THREE.Vector3(0, 0, 1),
                 // Physics properties
                 velocity: new THREE.Vector3(0, 0, 0),
                 angularVelocity: 0,
@@ -1379,13 +1419,11 @@
                 playerTank.position.set(40, 0, 0);
                 playerTank.rotation.y = Math.PI;
                 playerTank.userData.direction = new THREE.Vector3(-1, 0, 0);
-                playerTank.userData.turretDirection = new THREE.Vector3(-1, 0, 0);
             } else {
                 // Default spawn at center for other maps
                 playerTank.position.set(0, 0, 0);
                 playerTank.rotation.y = 0;
                 playerTank.userData.direction = new THREE.Vector3(0, 0, 1);
-                playerTank.userData.turretDirection = new THREE.Vector3(0, 0, 1);
             }
 
             // Reset velocity regardless of map
@@ -1503,7 +1541,7 @@
         });
 
         // Create bullet function
-        function createBullet(position, direction, isPlayerBullet, firingTank) {
+        function createBullet(position, direction, isPlayerBullet, damage) {
             const bulletGeometry = new THREE.SphereGeometry(0.2, 16, 16);
             const bulletMaterial = new THREE.MeshStandardMaterial({
                 color: isPlayerBullet ? 0xFFFF00 : 0xFF0000,
@@ -1521,7 +1559,7 @@
                 direction: direction.clone().normalize(),
                 speed: 0.5,
                 isPlayerBullet: isPlayerBullet,
-                damage: firingTank.userData.damage, // Store the damage from the tank that fired it
+                damage: damage, // Store the damage from the tank that fired it
                 lifeTime: 0,
                 maxLifeTime: 100 // Remove bullet after this many frames
             };
@@ -1536,12 +1574,12 @@
         function fireBullet(tank) {
             // Use the tank's facing direction for bullets
             const direction = tank.userData.direction.clone();
-            createBullet(tank.position.clone(), direction, tank.userData.isPlayer, tank);
+            createBullet(tank.position.clone(), direction, tank.userData.isPlayer, tank.userData.damage);
         }
 
         // Refactored spawn enemy function
-        function spawnEnemy(tankType = TANK_TYPES.RED) {
-            if (enemies.length >= 5 || gameOver) return; // Limit number of enemies
+        function spawnEnemy(tankType) {
+            if (enemies.length >= MAX_ENEMIES || gameOver) return; // Limit number of enemies
 
             const enemy = createTank(tankType);
 
@@ -1595,7 +1633,6 @@
                 0,
                 Math.cos(enemy.rotation.y)
             );
-            enemy.userData.turretDirection = enemy.userData.direction.clone();
 
             if (!enemy.userData.isPlayer) {
                 enemy.userData.lastPlayerPos = playerTank.position.clone();
@@ -1614,14 +1651,6 @@
             }
 
             return enemy;
-        }
-
-        // Spawn golden tank function
-        function spawnGoldenTank() {
-            if (gameOver) return;
-
-            // Spawn a golden tank
-            spawnEnemy(TANK_TYPES.GOLDEN);
         }
 
         // Create explosion effect
@@ -1867,9 +1896,6 @@
                 Math.cos(tank.rotation.y)
             );
 
-            // Also update the turret direction to match the tank's direction
-            tank.userData.turretDirection.copy(tank.userData.direction);
-
             // Apply deceleration
             tank.userData.velocity.multiplyScalar(tank.userData.deceleration);
             tank.userData.angularVelocity *= tank.userData.deceleration;
@@ -1924,7 +1950,12 @@
 
             // Spawn golden tank rarely
             if (Math.random() < TANK_TYPES.GOLDEN.spawnChance * (1 + 10*score/1000)) {
-                spawnGoldenTank();
+                spawnEnemy(TANK_TYPES.GOLDEN);
+            }
+
+            // Spawn blue tank (uncommon)
+            if (Math.random() < TANK_TYPES.BLUE.spawnChance * (1 + 5*score/1000)) {
+                spawnEnemy(TANK_TYPES.BLUE);
             }
 
             // Spawn supply crates randomly (less frequently)
@@ -2042,6 +2073,9 @@
                 if (enemy.userData.type === 'golden') {
                     // Golden tank AI is more sophisticated
                     updateGoldenTankAI(enemy, deltaTime);
+                } else if (enemy.userData.type === 'blue') {
+                    // Blue shotgun tank AI
+                    updateBlueTankAI(enemy, deltaTime);
                 } else {
                     // Standard enemy AI
                     updateRedTankAI(enemy, deltaTime);
@@ -2422,9 +2456,13 @@
 
                 // Set color based on tank type
                 if (enemy.userData.type === 'golden') {
-                    enemyDot.style.backgroundColor = '#FFD700'; // Gold color
+                    enemyDot.style.backgroundColor = TANK_TYPES.GOLDEN.color;
+                } else if (enemy.userData.type === 'blue') {
+                    enemyDot.style.backgroundColor = TANK_TYPES.BLUE.color;
+                } else {
+                    // Red tanks will use the default color from CSS
+                    enemyDot.style.backgroundColor = TANK_TYPES.RED.color;
                 }
-                // Red tanks will use the default color from CSS
 
                 // Calculate relative position from player to enemy
                 // This gives us the vector pointing from player to enemy in world coordinates
@@ -2533,12 +2571,7 @@
             enemy.userData.velocity.add(
                 enemy.userData.direction.clone().multiplyScalar(enemy.userData.acceleration * deltaTime)
             );
-
-            // Update enemy turret to face player
-            enemy.userData.turretDirection = new THREE.Vector3().subVectors(
-                playerTank.position, enemy.position
-            ).normalize();
-
+            
             // Enemy fires randomly
             if (Math.random() < config.ai.firingChance && enemy.userData.canFire) {
                 fireBullet(enemy);
@@ -2617,8 +2650,7 @@
 
                 case 'retreat':
                     // Move away from player but STILL FACE THE PLAYER
-                    const retreatDir = dirToPlayer.clone();
-                    tank.userData.direction = retreatDir;
+                    tank.userData.direction = dirToPlayer;
                     tank.userData.reverse = true;
 
                     // Prevent retreating too far away
@@ -2649,9 +2681,6 @@
             tank.userData.velocity.add(
                 tank.userData.direction.clone().multiplyScalar(accelerationFactor * tank.userData.acceleration * deltaTime)
             );
-
-            // Turret always aims at predicted player position
-            tank.userData.turretDirection = dirToPlayer;
 
             // Golden tank fires more aggressively when it has line of sight
             const hasLineOfSight = checkLineOfSight(tank.position, playerTank.position);
@@ -3908,6 +3937,147 @@
 
           // Remove bullet from bullets array
           bullets.splice(index, 1);
+        }
+
+        // Add this function to update blue tank AI
+        function updateBlueTankAI(enemy, deltaTime) {
+            const config = TANK_TYPES.BLUE;
+            const distanceToPlayer = enemy.position.distanceTo(playerTank.position);
+            
+            // Calculate direction to player
+            const dirToPlayer = new THREE.Vector3().subVectors(
+                playerTank.position, enemy.position
+            ).normalize();
+            
+            // Determine behavior based on distance
+            if (distanceToPlayer > config.ai.optimalRange) {
+                // Too far - move closer to player
+                enemy.userData.direction = dirToPlayer;
+            } else if (distanceToPlayer < config.ai.optimalRange * 0.5) {
+                // Too close - back up slightly
+                enemy.userData.direction = dirToPlayer.clone().negate();
+            } else if (Math.random() < config.ai.directionChangeChance) {
+                // At good range - strafe/circle the player
+                const perpVector = new THREE.Vector3(-dirToPlayer.z, 0, dirToPlayer.x);
+                if (Math.random() < 0.5) perpVector.negate();
+                enemy.userData.direction = perpVector;
+            }
+            
+            // Set rotation to match direction
+            enemy.rotation.y = Math.atan2(enemy.userData.direction.x, enemy.userData.direction.z);
+            
+            // Move tank
+            enemy.userData.velocity.add(
+                enemy.userData.direction.clone().multiplyScalar(enemy.userData.acceleration * deltaTime)
+            );
+            
+            // Always face turret toward player
+            enemy.userData.turretDirection = dirToPlayer;
+            
+            // Fire shotgun when in optimal range and has line of sight
+            if (distanceToPlayer <= config.ai.optimalRange && 
+                distanceToPlayer >= config.ai.optimalRange * 0.5 && 
+                enemy.userData.canFire && 
+                Math.random() < config.ai.firingChance) {
+                
+                // Check line of sight
+                const hasLineOfSight = checkLineOfSight(enemy.position, playerTank.position);
+                
+                if (hasLineOfSight) {
+                    fireShotgun(enemy);
+                    enemy.userData.canFire = false;
+                    enemy.userData.lastFired = Date.now();
+                    
+                    setTimeout(() => {
+                        if (enemies.includes(enemy)) {
+                            enemy.userData.canFire = true;
+                        }
+                    }, enemy.userData.fireRate);
+                }
+            }
+        }
+
+        // Add this function to handle shotgun firing
+        function fireShotgun(tank) {
+            const config = TANK_TYPES.BLUE;
+            
+            // Get base direction (toward target)
+            const baseDirection = tank.userData.turretDirection.clone();
+            
+            // Create multiple bullets in a spread pattern
+            for (let i = 0; i < config.weapon.pelletCount; i++) {
+                // Calculate spread angle for this pellet
+                const spreadFactor = (i / (config.weapon.pelletCount - 1)) - 0.5;
+                const spreadAngle = spreadFactor * config.weapon.spreadAngle;
+                
+                // Create a new direction with applied spread
+                const bulletDirection = baseDirection.clone();
+                
+                // Rotate the direction vector around the Y axis
+                const rotationMatrix = new THREE.Matrix4().makeRotationY(spreadAngle);
+                bulletDirection.applyMatrix4(rotationMatrix);
+                
+                // Create the bullet with the new direction
+                const bulletPosition = tank.position.clone().add(
+                    bulletDirection.clone().multiplyScalar(2)
+                );
+                bulletPosition.y = 1.375; // Same height as the tank barrel
+                
+                // Create bullet with standard createBullet function but with custom properties
+                const bullet = createBullet(
+                    bulletPosition, 
+                    bulletDirection, 
+                    false, // Not a player bullet
+                    config.weapon.damage // Individual pellet damage
+                );
+                
+                // Add a blue trail or effect to the bullets
+                if (bullet.userData) {
+                    bullet.userData.isShotgunPellet = true;
+                    bullet.userData.maxLifeTime = 30; // Shorter range
+                }
+            }
+            
+            // Visual effect - blue muzzle flash
+            createMuzzleFlash(tank.position.clone(), 0x00AAFF);
+        }
+
+        // Add this function to create a muzzle flash effect
+        function createMuzzleFlash(position, color) {
+            const flash = new THREE.Mesh(
+                new THREE.SphereGeometry(0.5, 8, 8),
+                new THREE.MeshBasicMaterial({
+                    color: color,
+                    transparent: true,
+                    opacity: 0.8
+                })
+            );
+            
+            // Position at gun barrel
+            flash.position.copy(position);
+            flash.position.y = 1.375; // Same height as tank barrel
+            
+            scene.add(flash);
+            
+            // Animate and remove
+            let scale = 1;
+            let opacity = 0.8;
+            
+            function animateFlash() {
+                scale += 0.1;
+                opacity -= 0.1;
+                
+                flash.scale.set(scale, scale, scale);
+                flash.material.opacity = opacity;
+                
+                if (opacity > 0) {
+                    requestAnimationFrame(animateFlash);
+                } else {
+                    scene.remove(flash);
+                }
+            }
+            
+            animateFlash();
         }
 
         // Start the game
