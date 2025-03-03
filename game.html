@@ -1,0 +1,3672 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>3D Tank Game</title>
+    <style>
+        body { margin: 0; overflow: hidden; }
+        canvas { display: block; }
+        #info {
+            position: absolute;
+            top: 10px;
+            width: 100%;
+            text-align: center;
+            color: white;
+            font-family: Arial, sans-serif;
+            pointer-events: none;
+        }
+        #score {
+            position: absolute;
+            top: 40px;
+            width: 100%;
+            text-align: center;
+            color: white;
+            font-family: Arial, sans-serif;
+            pointer-events: none;
+            font-size: 24px;
+            text-shadow: 2px 2px 4px rgba(0, 0, 0, 0.6);
+        }
+        #stats {
+            position: absolute;
+            top: 80px;
+            left: 20px;
+            color: white;
+            font-family: Arial, sans-serif;
+            background-color: rgba(0, 0, 0, 0.5);
+            padding: 10px;
+            border-radius: 5px;
+            pointer-events: none;
+        }
+        #radar {
+            position: absolute;
+            top: 20px;
+            right: 20px;
+            width: 150px;
+            height: 150px;
+            border-radius: 50%;
+            background-color: rgba(0, 0, 0, 0.5);
+            border: 2px solid #444;
+            overflow: hidden;
+        }
+        .radar-sweep {
+            position: absolute;
+            top: 0;
+            left: 0;
+            width: 100%;
+            height: 100%;
+            background: linear-gradient(90deg, rgba(0,255,0,0.3) 50%, transparent 50%);
+            animation: sweep 4s infinite linear;
+            transform-origin: center;
+        }
+        .radar-player {
+            position: absolute;
+            width: 8px;
+            height: 8px;
+            background-color: #1E8449;
+            border-radius: 50%;
+            top: 50%;
+            left: 50%;
+            transform: translate(-50%, -50%);
+            z-index: 3;
+        }
+        .radar-enemy {
+            position: absolute;
+            width: 6px;
+            height: 6px;
+            background-color: #E74C3C;
+            border-radius: 50%;
+            transform: translate(-50%, -50%);
+            z-index: 2;
+        }
+        @keyframes sweep {
+            from { transform: rotate(0deg); }
+            to { transform: rotate(360deg); }
+        }
+
+        #inventory {
+            position: absolute;
+            bottom: 20px;
+            left: 50%;
+            transform: translateX(-50%);
+            display: flex;
+            gap: 5px;
+            background-color: rgba(0, 0, 0, 0.5);
+            padding: 10px;
+            border-radius: 5px;
+        }
+        .inventory-slot {
+            width: 40px;
+            height: 40px;
+            background-color: rgba(50, 50, 50, 0.7);
+            border: 2px solid #444;
+            border-radius: 4px;
+            display: flex;
+            justify-content: center;
+            align-items: center;
+            color: white;
+            font-family: Arial, sans-serif;
+            position: relative;
+        }
+        .inventory-slot .key {
+            position: absolute;
+            top: -5px;
+            right: -5px;
+            background-color: #333;
+            padding: 2px 4px;
+            border-radius: 3px;
+            font-size: 10px;
+        }
+        .inventory-slot .count {
+            position: absolute;
+            bottom: 2px;
+            right: 2px;
+            font-size: 12px;
+            font-weight: bold;
+        }
+        .inventory-slot.speed {
+            background-color: rgba(0, 180, 255, 0.6);
+        }
+        .inventory-slot.health {
+            background-color: rgba(0, 255, 0, 0.6);
+        }
+    </style>
+</head>
+<body>
+    <div id="info">WASD to move, Shift for precision turning, Space to fire, M to change map, \ to reset | URBAN WARFARE</div>
+    <div id="score">Score: 0</div>
+    <div id="stats">
+        <div>Enemies Destroyed: 0</div>
+        <div>Shots Fired: 0</div>
+        <div>Accuracy: 0%</div>
+        <div>Time: 0:00</div>
+    </div>
+    <div id="radar">
+        <div class="radar-sweep"></div>
+        <div class="radar-player"></div>
+        <!-- Enemy dots will be added dynamically -->
+    </div>
+    <div id="inventory">
+        <!-- Inventory slots will be added dynamically -->
+    </div>
+    <script src="https://cdnjs.cloudflare.com/ajax/libs/three.js/r128/three.min.js"></script>
+    <script>
+        // Game state
+        let score = 0;
+        let gameOver = false;
+        let currentMap = "grass"; // Default map: "city" or "grass"
+        let gameStats = {
+            enemiesDestroyed: 0,
+            shotsFired: 0,
+            hits: 0,
+            startTime: 0,
+            gameTime: 0,
+            goldenTanksDestroyed: 0,  // Track golden tanks separately
+            supplyCratesOpened: 0,    // Track supply crates opened
+            powerupsCollected: 0      // Track power-ups collected
+        };
+
+        // Inventory system
+        const inventory = {
+            slots: Array(10).fill(null).map(() => ({ type: null, count: 0 })),
+            addItem: function(type) {
+                const itemCount = type === 'mine' ? 5 : type === 'heatseeker' ? 3 : 1;
+
+                // Try to find existing slot with same type
+                let slot = this.slots.find(slot => slot.type === type);
+                if (slot) {
+                    // Stack item if it already exists
+                    slot.count += itemCount;
+                    return true;
+                } else {
+                    // Find empty slot
+                    let emptyIndex = this.slots.findIndex(slot => slot.type === null);
+                    if (emptyIndex !== -1) {
+                        this.slots[emptyIndex] = { type: type, count: itemCount };
+                        return true;
+                    }
+                }
+                return false; // Inventory full
+            },
+            useItem: function(slotIndex) {
+                if (slotIndex >= 0 && slotIndex < this.slots.length) {
+                    const slot = this.slots[slotIndex];
+                    if (slot.type && slot.count > 0) {
+                        const itemType = slot.type;
+
+                        // Decrement count
+                        slot.count--;
+                        if (slot.count <= 0) {
+                            slot.type = null;
+                        }
+
+                        // Use the item
+                        applyPowerup(itemType);
+
+                        updateInventoryDisplay();
+                        return true;
+                    }
+                }
+                return false;
+            }
+        };
+
+        // Power-up state
+        const activePowerups = {
+            speed: {
+                active: false,
+                endTime: 0,
+                duration: 10000, // 10 seconds
+                multiplier: 1.5, // 50% faster
+                storable: true
+            },
+            health: {
+                active: false,
+                amount: 50,       // +50 health points
+                storable: false
+            },
+            mine: {
+                damage: 200, // Damage caused by mine explosion
+                radius: 7, // Explosion radius
+                storable: true
+            },
+            heatseeker: {
+                damage: 200, // Damage caused by heat-seeking missile
+                speed: 0.3, // Keep reasonable speed
+                storable: true
+            }
+        };
+
+        // Scene setup
+        const scene = new THREE.Scene();
+        scene.background = new THREE.Color(0x333344); // Darker sky for urban environment
+
+        // Obstacles array to track all obstacles in the game
+        const obstacles = [];
+
+        // Camera setup
+        const camera = new THREE.PerspectiveCamera(75, window.innerWidth / window.innerHeight, 0.1, 1000);
+        camera.position.set(0, 10, -15);
+        camera.lookAt(0, 0, 0);
+
+        // Renderer setup
+        const renderer = new THREE.WebGLRenderer({ antialias: true });
+        renderer.setSize(window.innerWidth, window.innerHeight);
+        renderer.shadowMap.enabled = true;
+        document.body.appendChild(renderer.domElement);
+
+        // Lights
+        const ambientLight = new THREE.AmbientLight(0x404040, 0.5);
+        scene.add(ambientLight);
+
+        const directionalLight = new THREE.DirectionalLight(0xffffff, 0.8);
+        directionalLight.position.set(10, 20, 10);
+        directionalLight.castShadow = true;
+        directionalLight.shadow.mapSize.width = 2048;
+        directionalLight.shadow.mapSize.height = 2048;
+        scene.add(directionalLight);
+
+        // Ground - city streets (asphalt)
+        const groundGeometry = new THREE.PlaneGeometry(200, 200);
+        const groundMaterial = new THREE.MeshStandardMaterial({
+            color: 0x555555, // Asphalt gray
+            roughness: 0.9,
+            metalness: 0.1
+        });
+        const ground = new THREE.Mesh(groundGeometry, groundMaterial);
+        ground.rotation.x = -Math.PI / 2;
+        ground.receiveShadow = true;
+        scene.add(ground);
+
+        const PLAYER_DEFAULT_HEALTH = 210;
+        // Tank type definitions - centralized configuration for all tank types
+        const TANK_TYPES = {
+            PLAYER: {
+                id: 'player',
+                color: 0x1E8449, // Green
+                health: 100,
+                speed: {
+                    acceleration: 0.01,
+                    deceleration: 0.98,
+                    maxSpeed: 0.15,
+                    maxAngularSpeed: 0.03
+                },
+                rotation: {
+                    speed: 0.002,
+                    acceleration: 0.0002,
+                    maxSpeed: 0.01
+                },
+                weapon: {
+                    fireRate: 1000, // ms between shots
+                    damage: 100
+                },
+                score: 0 // No points for destroying player
+            },
+            RED: {
+                id: 'red',
+                color: 0xE74C3C, // Red
+                health: 100,
+                speed: {
+                    acceleration: 0.01,
+                    deceleration: 0.98,
+                    maxSpeed: 0.08,
+                    maxAngularSpeed: 0.02
+                },
+                rotation: {
+                    speed: 0.015,  // Improved turning speed
+                    acceleration: 0.001,
+                    maxSpeed: 0.01
+                },
+                weapon: {
+                    fireRate: 1000,
+                    damage: 100
+                },
+                ai: {
+                    targetPrediction: 0.7,  // Improved prediction of player movement
+                    firingChance: 0.01,     // More controlled firing rate
+                    directionChangeChance: 0.02,
+                    chasePlayerChance: 0.7
+                },
+                score: 10,
+                description: "Standard red enemy tank"
+            },
+            GOLDEN: {
+                id: 'golden',
+                color: 0xFFD700, // Gold
+                health: 200,
+                speed: {
+                    acceleration: 0.015,
+                    deceleration: 0.97,
+                    maxSpeed: 0.12,
+                    maxAngularSpeed: 0.025
+                },
+                rotation: {
+                    speed: 0.015,
+                    acceleration: 0.0001,
+                    maxSpeed: 0.015
+                },
+                weapon: {
+                    fireRate: 800, // Fires faster
+                    damage: 100
+                },
+                ai: {
+                    targetPrediction: 1.5, // Predicts player movement
+                    firingChance: 0.03,
+                    stateChangeDuration: 5000, // ms between AI state changes
+                    defaultState: 'chase',
+                    states: ['chase', 'flank', 'retreat'],
+                    stateChances: [0.6, 0.2, 0.2], // Probabilities for each state
+                },
+                score: 50, // Worth more points
+                spawnChance: 0.0008, // Rare spawn rate
+                spawnEffect: {
+                    color: 0xFFD700,
+                    size: 2
+                },
+                destroyEffect: {
+                    color: 0xFFD700,
+                    size: 3
+                },
+                hitEffect: {
+                    color: 0xFFD700,
+                    size: 0.5
+                },
+                description: "Elite enemy tank with advanced AI and higher health"
+            }
+            // Future tank types can be added here
+        };
+
+        // Function to create a map based on the selected type
+        function createMap(mapType) {
+            // Clear existing obstacles
+            for (const obstacle of obstacles) {
+                scene.remove(obstacle);
+            }
+            obstacles.length = 0;
+
+            // Update scene and ground based on map type
+            if (mapType === "city") {
+                // City map - asphalt ground and city layout
+                scene.background = new THREE.Color(0x333344); // Darker sky
+                ground.material.color.set(0x555555); // Asphalt
+                ground.material.roughness = 0.9;
+                ground.material.metalness = 0.1;
+                createCityLayout();
+                document.getElementById('info').textContent = 'WASD to move, Shift for precision turning, Space to fire, M to change map, \\ to reset | URBAN WARFARE';
+            } else if (mapType === "grass") {
+                // Grass map - green ground with minimal obstacles
+                scene.background = new THREE.Color(0x87CEEB); // Blue sky
+                ground.material.color.set(0x556B2F); // Grass green
+                ground.material.roughness = 0.8;
+                ground.material.metalness = 0.2;
+                createGrasslandLayout();
+                document.getElementById('info').textContent = 'WASD to move, Shift for precision turning, Space to fire, M to change map, \\ to reset | GRASSLAND';
+            } else if (mapType === "arena") {
+                // Arena map - sand ground with gladiator arena layout
+                scene.background = new THREE.Color(0xFFA07A); // Light salmon sky for dramatic effect
+                ground.material.color.set(0xD2B48C); // Sand/tan color
+                ground.material.roughness = 1.0;
+                ground.material.metalness = 0.0;
+                createArenaLayout();
+                document.getElementById('info').textContent = 'WASD to move, Shift for precision turning, Space to fire, M to change map, \\ to reset | GLADIATOR ARENA';
+            }
+
+            currentMap = mapType;
+        }
+
+        // Function to create grassland layout with minimal obstacles
+        function createGrasslandLayout() {
+            // Add some scattered trees or rocks for minimal cover
+            const numObstacles = 15 + Math.floor(Math.random() * 10); // 15-25 obstacles
+
+            for (let i = 0; i < numObstacles; i++) {
+                // Random position
+                const x = (Math.random() - 0.5) * 180;
+                const z = (Math.random() - 0.5) * 180;
+
+                // Don't place obstacles too close to the spawn point
+                if (Math.abs(x) < 10 && Math.abs(z) < 10) {
+                    continue;
+                }
+
+                // Random obstacle type (tree or rock)
+                const obstacleType = Math.random() < 0.7 ? 'tree' : 'rock';
+
+                if (obstacleType === 'tree') {
+                    // Create tree - trunk + foliage
+                    const trunkHeight = 2 + Math.random();
+                    const trunkRadius = 0.4 + Math.random() * 0.3;
+                    const foliageRadius = 2 + Math.random() * 1.5;
+
+                    // Trunk
+                    const trunkGeometry = new THREE.CylinderGeometry(trunkRadius, trunkRadius, trunkHeight, 8);
+                    const trunkMaterial = new THREE.MeshStandardMaterial({
+                        color: 0x8B4513, // Brown
+                        roughness: 0.9,
+                        metalness: 0.1
+                    });
+                    const trunk = new THREE.Mesh(trunkGeometry, trunkMaterial);
+                    trunk.position.set(x, trunkHeight / 2, z);
+                    trunk.castShadow = true;
+                    trunk.receiveShadow = true;
+                    scene.add(trunk);
+
+                    // Foliage
+                    const foliageGeometry = new THREE.SphereGeometry(foliageRadius, 8, 8);
+                    const foliageMaterial = new THREE.MeshStandardMaterial({
+                        color: 0x228B22, // Forest green
+                        roughness: 1.0,
+                        metalness: 0.0
+                    });
+                    const foliage = new THREE.Mesh(foliageGeometry, foliageMaterial);
+                    foliage.position.set(x, trunkHeight + foliageRadius * 0.7, z);
+                    foliage.castShadow = true;
+                    foliage.receiveShadow = true;
+                    scene.add(foliage);
+
+                    // Add tree as obstacle for collision detection
+                    const treeObstacle = new THREE.Object3D();
+                    treeObstacle.position.set(x, 0, z);
+                    treeObstacle.userData = {
+                        type: 'obstacle',
+                        shape: 'cylinder',
+                        solid: true,
+                        destructible: false,
+                        health: 100,
+                        dimensions: {
+                            radius: trunkRadius * 1.5, // Slightly larger for collision
+                            height: trunkHeight + foliageRadius * 2
+                        }
+                    };
+                    scene.add(treeObstacle);
+                    obstacles.push(treeObstacle);
+
+                    // Also add trunk and foliage to obstacles for removal
+                    trunk.userData = { type: 'decoration' };
+                    foliage.userData = { type: 'decoration' };
+                    obstacles.push(trunk);
+                    obstacles.push(foliage);
+                } else {
+                    // Create rock
+                    const rockWidth = 1 + Math.random() * 2;
+                    const rockHeight = 0.8 + Math.random() * 1.2;
+                    const rockDepth = 1 + Math.random() * 2;
+
+                    const rockGeometry = new THREE.BoxGeometry(rockWidth, rockHeight, rockDepth);
+                    const rockMaterial = new THREE.MeshStandardMaterial({
+                        color: 0x888888, // Gray
+                        roughness: 0.9,
+                        metalness: 0.2
+                    });
+                    const rock = new THREE.Mesh(rockGeometry, rockMaterial);
+                    rock.position.set(x, rockHeight / 2, z);
+                    rock.rotation.y = Math.random() * Math.PI; // Random rotation
+                    rock.castShadow = true;
+                    rock.receiveShadow = true;
+                    scene.add(rock);
+
+                    rock.userData = {
+                        type: 'obstacle',
+                        shape: 'box',
+                        solid: true,
+                        destructible: false,
+                        health: 100,
+                        dimensions: {
+                            width: rockWidth,
+                            height: rockHeight,
+                            depth: rockDepth
+                        }
+                    };
+                    obstacles.push(rock);
+                }
+            }
+        }
+
+        // Function to create gladiator arena layout
+        function createArenaLayout() {
+            // Create circular wall
+            const arenaRadius = 80;
+            const wallHeight = 8;
+            const wallThickness = 3;
+            const segmentCount = 36;
+
+            // Create arena wall
+            for (let i = 0; i < segmentCount; i++) {
+                const angle1 = (i / segmentCount) * Math.PI * 2;
+                const angle2 = ((i + 1) / segmentCount) * Math.PI * 2;
+
+                const x1 = Math.sin(angle1) * arenaRadius;
+                const z1 = Math.cos(angle1) * arenaRadius;
+                const x2 = Math.sin(angle2) * arenaRadius;
+                const z2 = Math.cos(angle2) * arenaRadius;
+
+                // Calculate center point for this wall segment
+                const centerX = (x1 + x2) / 2;
+                const centerZ = (z1 + z2) / 2;
+
+                // Calculate rotation for this wall segment
+                const rotation = Math.atan2(x2 - x1, z2 - z1);
+
+                // Calculate width of this segment (chord length)
+                const segmentWidth = Math.sqrt(Math.pow(x2 - x1, 2) + Math.pow(z2 - z1, 2));
+
+                // Create wall segment
+                const wallGeometry = new THREE.BoxGeometry(segmentWidth, wallHeight, wallThickness);
+                const wallMaterial = new THREE.MeshStandardMaterial({
+                    color: 0xD2B48C, // Sandstone color
+                    roughness: 0.8,
+                    metalness: 0.2
+                });
+
+                const wall = new THREE.Mesh(wallGeometry, wallMaterial);
+                wall.position.set(centerX, wallHeight / 2, centerZ);
+                wall.rotation.y = rotation;
+                wall.castShadow = true;
+                wall.receiveShadow = true;
+
+                wall.userData = {
+                    type: 'obstacle',
+                    shape: 'box',
+                    solid: true,
+                    destructible: false,
+                    health: 100,
+                    dimensions: {
+                        width: segmentWidth,
+                        height: wallHeight,
+                        depth: wallThickness
+                    }
+                };
+
+                scene.add(wall);
+                obstacles.push(wall);
+            }
+
+            // Add columns around the arena (inner ring)
+            const columnCount = 12;
+            const columnRadius = arenaRadius - 15;
+            const columnHeight = 12;
+
+            for (let i = 0; i < columnCount; i++) {
+                const angle = (i / columnCount) * Math.PI * 2;
+                const x = Math.sin(angle) * columnRadius;
+                const z = Math.cos(angle) * columnRadius;
+
+                // Create column
+                createColumn(x, z, columnHeight);
+            }
+
+            // Add some centerpiece obstacles
+            createCentralStructure();
+
+            // Add some scattered combat obstacles
+            createArenaObstacles();
+        }
+
+        // Helper function to create a column
+        function createColumn(x, z, height = 12) {
+            const radiusTop = 1.5;
+            const radiusBottom = 2;
+            const columnGeometry = new THREE.CylinderGeometry(radiusTop, radiusBottom, height, 16);
+            const columnMaterial = new THREE.MeshStandardMaterial({
+                color: 0xEEEEEE, // Marble-like color
+                roughness: 0.5,
+                metalness: 0.3
+            });
+
+            const column = new THREE.Mesh(columnGeometry, columnMaterial);
+            column.position.set(x, height / 2, z);
+            column.castShadow = true;
+            column.receiveShadow = true;
+
+            // Add column base
+            const baseGeometry = new THREE.CylinderGeometry(radiusBottom + 0.5, radiusBottom + 0.8, 1, 16);
+            const baseMaterial = new THREE.MeshStandardMaterial({
+                color: 0xDDDDDD,
+                roughness: 0.6,
+                metalness: 0.2
+            });
+
+            const base = new THREE.Mesh(baseGeometry, baseMaterial);
+            base.position.set(0, -height / 2 - 0.5, 0);
+            column.add(base);
+
+            // Add column capital
+            const capitalGeometry = new THREE.CylinderGeometry(radiusTop + 0.8, radiusTop, 1.5, 16);
+            const capitalMaterial = new THREE.MeshStandardMaterial({
+                color: 0xDDDDDD,
+                roughness: 0.6,
+                metalness: 0.2
+            });
+
+            const capital = new THREE.Mesh(capitalGeometry, capitalMaterial);
+            capital.position.set(0, height / 2 + 0.75, 0);
+            column.add(capital);
+
+            column.userData = {
+                type: 'obstacle',
+                shape: 'cylinder',
+                solid: true,
+                destructible: false,
+                health: 100,
+                dimensions: {
+                    radius: radiusBottom,
+                    height: height
+                }
+            };
+
+            scene.add(column);
+            obstacles.push(column);
+
+            return column;
+        }
+
+        // Create central structure for the arena
+        function createCentralStructure() {
+            // Central platform
+            const platformRadius = 15;
+            const platformHeight = 1.2;
+
+            const platformGeometry = new THREE.CylinderGeometry(platformRadius, platformRadius, platformHeight, 32);
+            const platformMaterial = new THREE.MeshStandardMaterial({
+                color: 0xBB9977,
+                roughness: 0.7,
+                metalness: 0.1
+            });
+
+            const platform = new THREE.Mesh(platformGeometry, platformMaterial);
+            platform.position.set(0, platformHeight / 2, 0);
+            platform.receiveShadow = true;
+
+            platform.userData = {
+                type: 'obstacle',
+                shape: 'cylinder',
+                solid: true,
+                destructible: false,
+                health: 100,
+                dimensions: {
+                    radius: platformRadius,
+                    height: platformHeight
+                }
+            };
+
+            scene.add(platform);
+            obstacles.push(platform);
+
+            // Add central statue or structure
+            const statueBaseSize = 4;
+            const statueHeight = 6;
+
+            const statueBaseGeometry = new THREE.BoxGeometry(statueBaseSize, 2, statueBaseSize);
+            const statueBaseMaterial = new THREE.MeshStandardMaterial({
+                color: 0xDDDDDD,
+                roughness: 0.6,
+                metalness: 0.2
+            });
+
+            const statueBase = new THREE.Mesh(statueBaseGeometry, statueBaseMaterial);
+            statueBase.position.set(0, platformHeight + 1, 0);
+            statueBase.castShadow = true;
+            statueBase.receiveShadow = true;
+
+            statueBase.userData = {
+                type: 'obstacle',
+                shape: 'box',
+                solid: true,
+                destructible: false,
+                health: 100,
+                dimensions: {
+                    width: statueBaseSize,
+                    height: 2,
+                    depth: statueBaseSize
+                }
+            };
+
+            scene.add(statueBase);
+            obstacles.push(statueBase);
+
+            // Create a "statue" - simplified as an obelisk
+            const statueGeometry = new THREE.CylinderGeometry(0.5, 1.5, statueHeight, 4);
+            const statueMaterial = new THREE.MeshStandardMaterial({
+                color: 0xCCBBAA,
+                roughness: 0.7,
+                metalness: 0.3
+            });
+
+            const statue = new THREE.Mesh(statueGeometry, statueMaterial);
+            statue.position.set(0, platformHeight + 1 + 2 + statueHeight/2, 0);
+            statue.castShadow = true;
+
+            statue.userData = {
+                type: 'obstacle',
+                shape: 'cylinder',
+                solid: true,
+                destructible: false,
+                health: 100,
+                dimensions: {
+                    radius: 1.5,
+                    height: statueHeight
+                }
+            };
+
+            scene.add(statue);
+            obstacles.push(statue);
+        }
+
+        // Create various combat obstacles around the arena
+        function createArenaObstacles() {
+            // Create some low walls for cover
+            const wallPositions = [
+                { x: 25, z: 0, rotation: 0, length: 12 },
+                { x: -25, z: 0, rotation: 0, length: 12 },
+                { x: 0, z: 25, rotation: Math.PI/2, length: 12 },
+                { x: 0, z: -25, rotation: Math.PI/2, length: 12 },
+                { x: 40, z: 20, rotation: Math.PI/4, length: 8 },
+                { x: -40, z: 20, rotation: -Math.PI/4, length: 8 },
+                { x: 40, z: -20, rotation: -Math.PI/4, length: 8 },
+                { x: -40, z: -20, rotation: Math.PI/4, length: 8 }
+            ];
+
+            for (const pos of wallPositions) {
+                const wallGeometry = new THREE.BoxGeometry(pos.length, 1.5, 1);
+                const wallMaterial = new THREE.MeshStandardMaterial({
+                    color: 0xDDAA88,
+                    roughness: 0.9,
+                    metalness: 0.1
+                });
+
+                const wall = new THREE.Mesh(wallGeometry, wallMaterial);
+                wall.position.set(pos.x, 0.75, pos.z);
+                wall.rotation.y = pos.rotation;
+                wall.castShadow = true;
+                wall.receiveShadow = true;
+
+                wall.userData = {
+                    type: 'obstacle',
+                    shape: 'box',
+                    solid: true,
+                    destructible: false,
+                    health: 100,
+                    dimensions: {
+                        width: pos.length,
+                        height: 1.5,
+                        depth: 1
+                    }
+                };
+
+                scene.add(wall);
+                obstacles.push(wall);
+            }
+
+            // Create some broken columns/rubble for additional cover
+            const rubblePositions = [
+                { x: 35, z: -35 },
+                { x: -35, z: 35 },
+                { x: 50, z: 10 },
+                { x: -50, z: -10 },
+                { x: 15, z: 45 },
+                { x: -15, z: -45 }
+            ];
+
+            for (const pos of rubblePositions) {
+                // Create broken column
+                const columnHeight = 2 + Math.random() * 1.5;
+                const columnRadius = 1.5 + Math.random() * 0.5;
+
+                const columnGeometry = new THREE.CylinderGeometry(columnRadius, columnRadius, columnHeight, 16);
+                const columnMaterial = new THREE.MeshStandardMaterial({
+                    color: 0xEEEEDD,
+                    roughness: 0.8,
+                    metalness: 0.1
+                });
+
+                const column = new THREE.Mesh(columnGeometry, columnMaterial);
+
+                // Make it look fallen/broken by rotating it
+                column.rotation.x = Math.PI/2 - Math.random() * 0.3;
+                column.rotation.z = Math.random() * 0.4 - 0.2;
+
+                column.position.set(pos.x, columnHeight/3, pos.z);
+                column.castShadow = true;
+                column.receiveShadow = true;
+
+                column.userData = {
+                    type: 'obstacle',
+                    shape: 'cylinder',
+                    solid: true,
+                    destructible: false,
+                    health: 100,
+                    dimensions: {
+                        radius: columnRadius,
+                        height: columnHeight
+                    }
+                };
+
+                scene.add(column);
+                obstacles.push(column);
+
+                // Add some rubble pieces around the broken column
+                const rubbleCount = 2 + Math.floor(Math.random() * 3);
+
+                for (let i = 0; i < rubbleCount; i++) {
+                    const rubbleSize = 0.8 + Math.random() * 1.2;
+                    const rubbleGeometry = new THREE.BoxGeometry(
+                        rubbleSize,
+                        rubbleSize * 0.6,
+                        rubbleSize
+                    );
+                    const rubbleMaterial = new THREE.MeshStandardMaterial({
+                        color: 0xDDDDCC,
+                        roughness: 0.9,
+                        metalness: 0.1
+                    });
+
+                    const rubble = new THREE.Mesh(rubbleGeometry, rubbleMaterial);
+
+                    // Position around the column
+                    const angle = Math.random() * Math.PI * 2;
+                    const distance = columnRadius + 1 + Math.random() * 2;
+
+                    rubble.position.set(
+                        pos.x + Math.sin(angle) * distance,
+                        rubbleSize * 0.3,
+                        pos.z + Math.cos(angle) * distance
+                    );
+
+                    // Random rotation
+                    rubble.rotation.y = Math.random() * Math.PI;
+                    rubble.castShadow = true;
+                    rubble.receiveShadow = true;
+
+                    rubble.userData = {
+                        type: 'obstacle',
+                        shape: 'box',
+                        solid: true,
+                        destructible: false,
+                        health: 100,
+                        dimensions: {
+                            width: rubbleSize,
+                            height: rubbleSize * 0.6,
+                            depth: rubbleSize
+                        }
+                    };
+
+                    scene.add(rubble);
+                    obstacles.push(rubble);
+                }
+            }
+        }
+
+        function createObstacle(type, params) {
+            let obstacle;
+
+            switch(type) {
+                case 'box':
+                    // Create a box obstacle
+                    const geometry = new THREE.BoxGeometry(
+                        params.width || 5,
+                        params.height || 3,
+                        params.depth || 5
+                    );
+                    const material = new THREE.MeshStandardMaterial({
+                        color: params.color || 0x8B4513,  // Brown by default
+                        roughness: params.roughness !== undefined ? params.roughness : 0.7,
+                        metalness: params.metalness !== undefined ? params.metalness : 0.2
+                    });
+                    obstacle = new THREE.Mesh(geometry, material);
+
+                    // Position the box
+                    obstacle.position.set(
+                        params.x || 0,
+                        (params.height || 3) / 2,  // Half height to sit on ground
+                        params.z || 0
+                    );
+
+                    // Add shadow properties
+                    obstacle.castShadow = true;
+                    obstacle.receiveShadow = true;
+
+                    // Add obstacle metadata
+                    obstacle.userData = {
+                        type: 'obstacle',
+                        shape: 'box',
+                        solid: params.solid !== undefined ? params.solid : true,
+                        destructible: params.destructible !== undefined ? params.destructible : false,
+                        health: params.health || 100,
+                        // Store dimensions for collision detection
+                        dimensions: {
+                            width: params.width || 5,
+                            height: params.height || 3,
+                            depth: params.depth || 5
+                        }
+                    };
+                    break;
+
+                case 'skyscraper':
+                    // Create a tall building
+                    const skyscraperHeight = params.height || 20 + Math.random() * 15;
+                    const skyscraperGeometry = new THREE.BoxGeometry(
+                        params.width || 8,
+                        skyscraperHeight,
+                        params.depth || 8
+                    );
+
+                    // Glass material for skyscrapers
+                    const skyscraperMaterial = new THREE.MeshStandardMaterial({
+                        color: params.color || 0x88CCEE,  // Blue glass
+                        roughness: 0.1,
+                        metalness: 0.8,
+                        transparent: true,
+                        opacity: 0.8
+                    });
+
+                    obstacle = new THREE.Mesh(skyscraperGeometry, skyscraperMaterial);
+                    obstacle.position.set(
+                        params.x || 0,
+                        skyscraperHeight / 2,
+                        params.z || 0
+                    );
+
+                    obstacle.castShadow = true;
+                    obstacle.receiveShadow = true;
+
+                    obstacle.userData = {
+                        type: 'building',
+                        shape: 'box',
+                        solid: true,
+                        destructible: false,
+                        health: 100,
+                        dimensions: {
+                            width: params.width || 8,
+                            height: skyscraperHeight,
+                            depth: params.depth || 8
+                        }
+                    };
+                    break;
+
+                case 'office':
+                    // Medium-sized office building
+                    const officeHeight = params.height || 8 + Math.random() * 6;
+                    const officeGeometry = new THREE.BoxGeometry(
+                        params.width || 10,
+                        officeHeight,
+                        params.depth || 10
+                    );
+
+                    // Office building material
+                    const officeMaterial = new THREE.MeshStandardMaterial({
+                        color: params.color || 0xCCCCCC,  // Concrete
+                        roughness: 0.5,
+                        metalness: 0.3
+                    });
+
+                    obstacle = new THREE.Mesh(officeGeometry, officeMaterial);
+                    obstacle.position.set(
+                        params.x || 0,
+                        officeHeight / 2,
+                        params.z || 0
+                    );
+
+                    obstacle.castShadow = true;
+                    obstacle.receiveShadow = true;
+
+                    obstacle.userData = {
+                        type: 'building',
+                        shape: 'box',
+                        solid: true,
+                        destructible: false,
+                        health: 100,
+                        dimensions: {
+                            width: params.width || 10,
+                            height: officeHeight,
+                            depth: params.depth || 10
+                        }
+                    };
+                    break;
+
+                case 'apartment':
+                    // Apartment building
+                    const apartmentHeight = params.height || 10 + Math.random() * 4;
+                    const apartmentGeometry = new THREE.BoxGeometry(
+                        params.width || 12,
+                        apartmentHeight,
+                        params.depth || 8
+                    );
+
+                    // Apartment building material - brick-like
+                    const apartmentMaterial = new THREE.MeshStandardMaterial({
+                        color: params.color || 0xAA4444,  // Brick red
+                        roughness: 0.8,
+                        metalness: 0.1
+                    });
+
+                    obstacle = new THREE.Mesh(apartmentGeometry, apartmentMaterial);
+                    obstacle.position.set(
+                        params.x || 0,
+                        apartmentHeight / 2,
+                        params.z || 0
+                    );
+
+                    obstacle.castShadow = true;
+                    obstacle.receiveShadow = true;
+
+                    obstacle.userData = {
+                        type: 'building',
+                        shape: 'box',
+                        solid: true,
+                        destructible: false,
+                        health: 100,
+                        dimensions: {
+                            width: params.width || 12,
+                            height: apartmentHeight,
+                            depth: params.depth || 8
+                        }
+                    };
+                    break;
+
+                case 'store':
+                    // Small store
+                    const storeHeight = params.height || 4 + Math.random() * 2;
+                    const storeGeometry = new THREE.BoxGeometry(
+                        params.width || 6,
+                        storeHeight,
+                        params.depth || 6
+                    );
+
+                    // Store material
+                    const storeMaterial = new THREE.MeshStandardMaterial({
+                        color: params.color || 0xDDDDDD, // Light gray
+                        roughness: 0.6,
+                        metalness: 0.2
+                    });
+
+                    obstacle = new THREE.Mesh(storeGeometry, storeMaterial);
+                    obstacle.position.set(
+                        params.x || 0,
+                        storeHeight / 2,
+                        params.z || 0
+                    );
+
+                    obstacle.castShadow = true;
+                    obstacle.receiveShadow = true;
+
+                    obstacle.userData = {
+                        type: 'building',
+                        shape: 'box',
+                        solid: true,
+                        destructible: false,
+                        health: 100,
+                        dimensions: {
+                            width: params.width || 6,
+                            height: storeHeight,
+                            depth: params.depth || 6
+                        }
+                    };
+                    break;
+
+                default:
+                    console.error('Unknown obstacle type:', type);
+                    return null;
+            }
+
+            // Add to scene and obstacles array
+            scene.add(obstacle);
+            obstacles.push(obstacle);
+
+            return obstacle;
+        }
+
+        // Function to create city layout
+        function createCityLayout() {
+            // City parameters
+            const citySize = 200; // Same as ground size
+            const blockSize = 15;
+            const roadWidth = 7; // Wide enough for tanks
+
+            // Calculate how many blocks we can fit
+            const blocksPerSide = Math.floor(citySize / (blockSize + roadWidth));
+            const startOffset = -(citySize / 2) + roadWidth + (blockSize / 2);
+
+            // Array of building types
+            const buildingTypes = ['skyscraper', 'office', 'apartment', 'store'];
+
+            // Array of building materials/colors
+            const buildingColors = [
+                0x88CCEE, // Blue glass
+                0xCCCCCC, // Light gray concrete
+                0xAA4444, // Brick red
+                0xDDDDDD, // White stone
+                0x666666, // Dark gray
+                0x8899AA, // Blue-gray
+                0xAA8866  // Tan
+            ];
+
+            // Loop to create city grid
+            for (let x = 0; x < blocksPerSide; x++) {
+                for (let z = 0; z < blocksPerSide; z++) {
+                    // Calculate block position
+                    const blockX = startOffset + x * (blockSize + roadWidth);
+                    const blockZ = startOffset + z * (blockSize + roadWidth);
+
+                    // Skip the center block (player spawn area)
+                    if (Math.abs(blockX) < blockSize && Math.abs(blockZ) < blockSize) {
+                        continue;
+                    }
+
+                    // Random number of buildings per block (1-2)
+                    const buildingsInBlock = 1 + Math.floor(Math.random() * 2);
+
+                    for (let b = 0; b < buildingsInBlock; b++) {
+                        // Random position within block
+                        const offsetX = (Math.random() - 0.5) * (blockSize * 0.6);
+                        const offsetZ = (Math.random() - 0.5) * (blockSize * 0.6);
+
+                        // Random building type
+                        const buildingType = buildingTypes[Math.floor(Math.random() * buildingTypes.length)];
+
+                        // Random building color
+                        const buildingColor = buildingColors[Math.floor(Math.random() * buildingColors.length)];
+
+                        // Adjust building size based on type to ensure they fit within block
+                        let buildingWidth, buildingDepth;
+
+                        switch (buildingType) {
+                            case 'skyscraper':
+                                buildingWidth = 7 + Math.random() * 2;
+                                buildingDepth = 7 + Math.random() * 2;
+                                break;
+                            case 'office':
+                                buildingWidth = 8 + Math.random() * 3;
+                                buildingDepth = 8 + Math.random() * 3;
+                                break;
+                            case 'apartment':
+                                buildingWidth = 9 + Math.random() * 3;
+                                buildingDepth = 6 + Math.random() * 2;
+                                break;
+                            case 'store':
+                                buildingWidth = 5 + Math.random() * 2;
+                                buildingDepth = 5 + Math.random() * 2;
+                                break;
+                            default:
+                                buildingWidth = 6;
+                                buildingDepth = 6;
+                        }
+
+                        // Ensure building fits within block
+                        buildingWidth = Math.min(buildingWidth, blockSize * 0.8);
+                        buildingDepth = Math.min(buildingDepth, blockSize * 0.8);
+
+                        // Create building
+                        createObstacle(buildingType, {
+                            width: buildingWidth,
+                            depth: buildingDepth,
+                            x: blockX + offsetX,
+                            z: blockZ + offsetZ,
+                            color: buildingColor
+                        });
+                    }
+                }
+            }
+
+            // Add some road markings - simple white lines
+            const addRoadMarkings = false; // Set to true to add road markings if desired
+
+            if (addRoadMarkings) {
+                // Create road markings here
+                // This would be more complex but could be added later
+            }
+        }
+
+        // Helper function to check if a position is clear (not inside any obstacle)
+        function isPositionClear(position, radius) {
+            for (const obstacle of obstacles) {
+                // For box obstacles
+                if (obstacle.userData.shape === 'box') {
+                    // Simple box-sphere collision check
+                    const halfWidth = obstacle.userData.dimensions.width / 2;
+                    const halfHeight = obstacle.userData.dimensions.height / 2;
+                    const halfDepth = obstacle.userData.dimensions.depth / 2;
+
+                    // Find closest point on box to the position
+                    const closestX = Math.max(obstacle.position.x - halfWidth, Math.min(position.x, obstacle.position.x + halfWidth));
+                    const closestY = Math.max(obstacle.position.y - halfHeight, Math.min(position.y, obstacle.position.y + halfHeight));
+                    const closestZ = Math.max(obstacle.position.z - halfDepth, Math.min(position.z, obstacle.position.z + halfDepth));
+
+                    // Calculate distance to the closest point
+                    const distance = Math.sqrt(
+                        (position.x - closestX) * (position.x - closestX) +
+                        (position.y - closestY) * (position.y - closestY) +
+                        (position.z - closestZ) * (position.z - closestZ)
+                    );
+
+                    // If distance is less than radius, there's a collision
+                    if (distance < radius) {
+                        return false;
+                    }
+                }
+                // Cylinder obstacles (trees)
+                else if (obstacle.userData.shape === 'cylinder') {
+                    // Calculate horizontal distance (ignoring y-axis)
+                    const dx = position.x - obstacle.position.x;
+                    const dz = position.z - obstacle.position.z;
+                    const horizontalDistance = Math.sqrt(dx * dx + dz * dz);
+
+                    // Check if horizontal distance is less than sum of radii
+                    if (horizontalDistance < (radius + obstacle.userData.dimensions.radius)) {
+                        return false;
+                    }
+                }
+                // Additional collision checks for other obstacle types can be added here
+            }
+
+            return true; // No collisions found
+        }
+
+        // Create city layout
+        createMap(currentMap);
+
+        // Refactored tank factory function
+        function createTank(tankType, isPlayer = false) {
+            // Get tank configuration based on type
+            const config = isPlayer ? TANK_TYPES.PLAYER : tankType;
+            const tank = new THREE.Group();
+
+            // Tank body
+            const bodyGeometry = new THREE.BoxGeometry(2, 0.75, 3);
+            const bodyMaterial = new THREE.MeshStandardMaterial({
+                color: config.color,
+                metalness: config.id === 'golden' ? 0.8 : 0.2,
+                roughness: config.id === 'golden' ? 0.2 : 0.7,
+                emissive: config.id === 'golden' ? 0xFFD700 : 0x000000,
+                emissiveIntensity: config.id === 'golden' ? 0.2 : 0
+            });
+            const body = new THREE.Mesh(bodyGeometry, bodyMaterial);
+            body.position.y = 0.75;
+            body.castShadow = true;
+            tank.add(body);
+
+            // Tank turret
+            const turretGeometry = new THREE.CylinderGeometry(0.75, 0.75, 0.5, 16);
+            const turretMaterial = new THREE.MeshStandardMaterial({ color: config.color });
+            const turret = new THREE.Mesh(turretGeometry, turretMaterial);
+            turret.position.y = 1.375;
+            turret.castShadow = true;
+            tank.add(turret);
+
+            // Tank barrel
+            const barrelGeometry = new THREE.CylinderGeometry(0.2, 0.2, 1.5, 16);
+            const barrelMaterial = new THREE.MeshStandardMaterial({ color: 0x333333 });
+            const barrel = new THREE.Mesh(barrelGeometry, barrelMaterial);
+            barrel.position.set(0, 1.375, 1.25);
+            barrel.rotation.x = Math.PI / 2;
+            barrel.castShadow = true;
+            tank.add(barrel);
+
+            // Tank tracks
+            const trackGeometry = new THREE.BoxGeometry(0.5, 0.5, 3);
+            const trackMaterial = new THREE.MeshStandardMaterial({ color: 0x333333 });
+
+            const leftTrack = new THREE.Mesh(trackGeometry, trackMaterial);
+            leftTrack.position.set(-1, 0.25, 0);
+            leftTrack.castShadow = true;
+            tank.add(leftTrack);
+
+            const rightTrack = new THREE.Mesh(trackGeometry, trackMaterial);
+            rightTrack.position.set(1, 0.25, 0);
+            rightTrack.castShadow = true;
+            tank.add(rightTrack);
+
+            // Tank properties
+            tank.userData = {
+                type: config.id,
+                health: config.health,
+                isPlayer: isPlayer,
+                direction: new THREE.Vector3(0, 0, 1),
+                turretDirection: new THREE.Vector3(0, 0, 1),
+                // Physics properties
+                velocity: new THREE.Vector3(0, 0, 0),
+                angularVelocity: 0,
+                acceleration: config.speed.acceleration,
+                deceleration: config.speed.deceleration,
+                maxSpeed: config.speed.maxSpeed,
+                maxAngularSpeed: config.speed.maxAngularSpeed,
+                // Rotation properties
+                rotationSpeed: config.rotation.speed,
+                rotationAcceleration: config.rotation.acceleration,
+                maxRotationSpeed: config.rotation.maxSpeed,
+                // Weapon properties
+                canFire: true,
+                fireRate: config.weapon.fireRate,
+                damage: config.weapon.damage,
+                lastFired: 0,
+                // Turn control (player only)
+                isRotatingLeft: false,
+                isRotatingRight: false,
+                rotationHoldTime: { left: 0, right: 0 },
+                // AI properties (enemy only)
+                targetPrediction: config.ai?.targetPrediction || 0,
+                aiState: config.ai?.defaultState || 'chase',
+                stateChangeTime: 0,
+                lastPlayerPos: new THREE.Vector3(),
+                // Score value when destroyed
+                scoreValue: config.score
+            };
+
+            return tank;
+        }
+
+        // Create player tank
+        const playerTank = createTank(TANK_TYPES.PLAYER, true); // Green tank
+        playerTank.position.set(0, 0, 0);
+        scene.add(playerTank);
+
+        // Enemy tanks array
+        const enemies = [];
+
+        // Create bullets array
+        const bullets = [];
+
+        // Arrays to track supply crates and power-ups
+        const supplyCrates = [];
+        const powerups = [];
+
+        // Input handling
+        const keyState = {};
+
+        // Function to reset player position based on map type
+        function resetPlayerPosition(mapType) {
+            if (mapType === "arena") {
+                // For arena map, spawn away from center
+                playerTank.position.set(40, 0, 0);
+                playerTank.rotation.y = Math.PI;
+                playerTank.userData.direction = new THREE.Vector3(-1, 0, 0);
+                playerTank.userData.turretDirection = new THREE.Vector3(-1, 0, 0);
+            } else {
+                // Default spawn at center for other maps
+                playerTank.position.set(0, 0, 0);
+                playerTank.rotation.y = 0;
+                playerTank.userData.direction = new THREE.Vector3(0, 0, 1);
+                playerTank.userData.turretDirection = new THREE.Vector3(0, 0, 1);
+            }
+
+            // Reset velocity regardless of map
+            playerTank.userData.velocity.set(0, 0, 0);
+            playerTank.userData.angularVelocity = 0;
+        }
+
+        document.addEventListener('keydown', (event) => {
+            keyState[event.key.toLowerCase()] = true;
+
+            // Add support for arrow keys
+            if (event.key === 'ArrowUp') keyState['w'] = true;
+            if (event.key === 'ArrowDown') keyState['s'] = true;
+            if (event.key === 'ArrowLeft') keyState['a'] = true;
+            if (event.key === 'ArrowRight') keyState['d'] = true;
+
+            // Track rotation key press start
+            if ((event.key.toLowerCase() === 'a' || event.key === 'ArrowLeft') && !playerTank.userData.isRotatingLeft) {
+                playerTank.userData.isRotatingLeft = true;
+                playerTank.userData.rotationHoldTime.left = 0;
+            }
+            if ((event.key.toLowerCase() === 'd' || event.key === 'ArrowRight') && !playerTank.userData.isRotatingRight) {
+                playerTank.userData.isRotatingRight = true;
+                playerTank.userData.rotationHoldTime.right = 0;
+            }
+
+            // Fire bullet with space
+            if (event.code === 'Space' && playerTank.userData.canFire && !gameOver) {
+                fireBullet(playerTank);
+                playerTank.userData.canFire = false;
+                playerTank.userData.lastFired = Date.now();
+
+                // Update shots fired count
+                gameStats.shotsFired++;
+                updateStats();
+
+                setTimeout(() => {
+                    playerTank.userData.canFire = true;
+                }, playerTank.userData.fireRate);
+            }
+
+            // Reset game with backslash
+            if (event.key === '\\') {
+                resetGame();
+            }
+
+            // Change map with M key
+            if (event.key.toLowerCase() === 'm') {
+                // Cycle between three maps: city → grass → arena → city
+                let newMap;
+                if (currentMap === "city") {
+                    newMap = "grass";
+                } else if (currentMap === "grass") {
+                    newMap = "arena";
+                } else {
+                    newMap = "city";
+                }
+
+                // Clear all entities
+                clearGameEntities();
+
+                // Create the new map
+                createMap(newMap);
+
+                // Reset player position based on the new map
+                resetPlayerPosition(newMap);
+
+                // Show map change message
+                const mapNames = {
+                    "city": "URBAN WARFARE",
+                    "grass": "GRASSLAND",
+                    "arena": "GLADIATOR ARENA"
+                };
+                document.getElementById('info').textContent = `WASD to move, Shift for precision turning, Space to fire, M to change map, \\ to reset | ${mapNames[newMap]}`;
+            }
+
+            // Handle inventory keys (1-0)
+            const key = event.key;
+            if (key >= '1' && key <= '9') {
+                const slotIndex = parseInt(key) - 1;
+                inventory.useItem(slotIndex);
+            } else if (key === '0') {
+                inventory.useItem(9); // 0 key is for 10th slot
+            }
+        });
+
+        document.addEventListener('keyup', (event) => {
+            keyState[event.key.toLowerCase()] = false;
+
+            // Add support for arrow keys
+            if (event.key === 'ArrowUp') keyState['w'] = false;
+            if (event.key === 'ArrowDown') keyState['s'] = false;
+            if (event.key === 'ArrowLeft') keyState['a'] = false;
+            if (event.key === 'ArrowRight') keyState['d'] = false;
+
+            // Handle rotation key release - hard stop
+            if (event.key.toLowerCase() === 'a' || event.key === 'ArrowLeft') {
+                playerTank.userData.isRotatingLeft = false;
+                playerTank.userData.rotationHoldTime.left = 0;
+
+                // Hard stop for turning
+                if (playerTank.userData.angularVelocity > 0) {
+                    playerTank.userData.angularVelocity = 0;
+                }
+            }
+            if (event.key.toLowerCase() === 'd' || event.key === 'ArrowRight') {
+                playerTank.userData.isRotatingRight = false;
+                playerTank.userData.rotationHoldTime.right = 0;
+
+                // Hard stop for turning
+                if (playerTank.userData.angularVelocity < 0) {
+                    playerTank.userData.angularVelocity = 0;
+                }
+            }
+        });
+
+        // Create bullet function
+        function createBullet(position, direction, isPlayerBullet, firingTank) {
+            const bulletGeometry = new THREE.SphereGeometry(0.2, 16, 16);
+            const bulletMaterial = new THREE.MeshStandardMaterial({
+                color: isPlayerBullet ? 0xFFFF00 : 0xFF0000,
+                emissive: isPlayerBullet ? 0xFFFF00 : 0xFF0000,
+                emissiveIntensity: 0.5
+            });
+            const bullet = new THREE.Mesh(bulletGeometry, bulletMaterial);
+
+            // Position slightly in front of the tank barrel
+            bullet.position.copy(position);
+            bullet.position.add(direction.clone().multiplyScalar(2.5));
+            bullet.position.y = 1.375; // Same height as the barrel
+
+            bullet.userData = {
+                direction: direction.clone().normalize(),
+                speed: 0.5,
+                isPlayerBullet: isPlayerBullet,
+                damage: firingTank.userData.damage, // Store the damage from the tank that fired it
+                lifeTime: 0,
+                maxLifeTime: 100 // Remove bullet after this many frames
+            };
+
+            scene.add(bullet);
+            bullets.push(bullet);
+
+            return bullet;
+        }
+
+        // Fire bullet function
+        function fireBullet(tank) {
+            // Use the tank's facing direction for bullets
+            const direction = tank.userData.direction.clone();
+            createBullet(tank.position.clone(), direction, tank.userData.isPlayer, tank);
+        }
+
+        // Refactored spawn enemy function
+        function spawnEnemy(tankType = TANK_TYPES.RED) {
+            if (enemies.length >= 5 || gameOver) return; // Limit number of enemies
+
+            const enemy = createTank(tankType);
+
+            // Random position away from player
+            let x, z;
+            let validPosition = false;
+            let attempts = 0;
+            const maxAttempts = 30;
+
+            do {
+                x = (Math.random() - 0.5) * 180;
+                z = (Math.random() - 0.5) * 180;
+
+                // Check if position is away from player
+                const distToPlayer = Math.sqrt(
+                    Math.pow(x - playerTank.position.x, 2) +
+                    Math.pow(z - playerTank.position.z, 2)
+                );
+
+                // Golden tanks spawn farther away but not too far
+                const minDistance = tankType.id === 'golden' ? 30 : 25;
+                const maxDistance = tankType.id === 'golden' ? 80 : 150;
+                const awayFromPlayer = distToPlayer > minDistance && distToPlayer < maxDistance;
+
+                // Check if position is clear of obstacles
+                const positionClear = isPositionClear(new THREE.Vector3(x, 1.5, z), 2);
+
+                validPosition = awayFromPlayer && positionClear;
+                attempts++;
+
+                if (attempts >= maxAttempts && !validPosition) {
+                    console.log(`Failed to find valid spawn position for ${tankType.id} tank`);
+                    return; // Give up after too many attempts
+                }
+            } while (!validPosition);
+
+            enemy.position.set(x, 0, z);
+
+            // Initial rotation - golden tanks face the player, others get random rotation
+            if (tankType.id === 'golden') {
+                enemy.rotation.y = Math.atan2(
+                    playerTank.position.x - enemy.position.x,
+                    playerTank.position.z - enemy.position.z
+                );
+            } else {
+                enemy.rotation.y = Math.random() * Math.PI * 2;
+            }
+
+            enemy.userData.direction = new THREE.Vector3(
+                Math.sin(enemy.rotation.y),
+                0,
+                Math.cos(enemy.rotation.y)
+            );
+            enemy.userData.turretDirection = enemy.userData.direction.clone();
+
+            if (!enemy.userData.isPlayer) {
+                enemy.userData.lastPlayerPos = playerTank.position.clone();
+            }
+
+            scene.add(enemy);
+            enemies.push(enemy);
+
+            // Special spawn effect for golden tanks
+            if (tankType.id === 'golden') {
+                createExplosionEffect(
+                    enemy.position.clone(),
+                    tankType.spawnEffect.color,
+                    tankType.spawnEffect.size
+                );
+            }
+
+            return enemy;
+        }
+
+        // Spawn golden tank function
+        function spawnGoldenTank() {
+            if (gameOver) return;
+
+            // Spawn a golden tank
+            spawnEnemy(TANK_TYPES.GOLDEN);
+        }
+
+        // Create explosion effect
+        function createExplosionEffect(position, color, size = 1) {
+            const particles = [];
+            const particleCount = 20;
+
+            for (let i = 0; i < particleCount; i++) {
+                const particle = new THREE.Mesh(
+                    new THREE.SphereGeometry(0.2 * size, 8, 8),
+                    new THREE.MeshBasicMaterial({
+                        color: color,
+                        transparent: true,
+                        opacity: 1
+                    })
+                );
+
+                particle.position.copy(position);
+
+                // Random direction
+                const theta = Math.random() * Math.PI * 2;
+                const phi = Math.random() * Math.PI;
+                const speed = 0.05 + Math.random() * 0.1;
+
+                particle.userData = {
+                    velocity: new THREE.Vector3(
+                        Math.sin(phi) * Math.cos(theta) * speed,
+                        Math.cos(phi) * speed,
+                        Math.sin(phi) * Math.sin(theta) * speed
+                    ),
+                    life: 30 + Math.floor(Math.random() * 20)
+                };
+
+                scene.add(particle);
+                particles.push(particle);
+            }
+
+            // Animation loop for particles
+            function updateParticles() {
+                let allDead = true;
+
+                for (let i = particles.length - 1; i >= 0; i--) {
+                    const particle = particles[i];
+
+                    particle.position.add(particle.userData.velocity);
+                    particle.userData.life--;
+
+                    // Fade out
+                    particle.material.opacity = particle.userData.life / 30;
+
+                    // Remove dead particles
+                    if (particle.userData.life <= 0) {
+                        scene.remove(particle);
+                        particles.splice(i, 1);
+                    } else {
+                        allDead = false;
+                    }
+                }
+
+                if (!allDead) {
+                    requestAnimationFrame(updateParticles);
+                }
+            }
+
+            updateParticles();
+        }
+
+        // Initialize inventory display
+        initializeInventoryDisplay();
+
+        // New helper function to clear game entities
+        function clearGameEntities() {
+            // Remove all enemies
+            for (const enemy of enemies) {
+                scene.remove(enemy);
+            }
+            enemies.length = 0;
+
+            // Remove all bullets
+            while (bullets.length > 0) {
+                removeBullet(bullets[0], 0);
+            }
+
+            // Remove all existing obstacles
+            for (const obstacle of obstacles) {
+                scene.remove(obstacle);
+            }
+            obstacles.length = 0;
+
+            // Remove all supply crates
+            for (const crate of supplyCrates) {
+                scene.remove(crate);
+            }
+            supplyCrates.length = 0;
+
+            // Remove all powerups
+            for (const powerup of powerups) {
+                scene.remove(powerup);
+            }
+            powerups.length = 0;
+        }
+
+        // Reset game function
+        function resetGame() {
+            // Clear all game entities (reusing the same function)
+            clearGameEntities();
+
+            // Create city layout
+            createMap(currentMap);
+
+            // Reset player position based on current map
+            resetPlayerPosition(currentMap);
+
+            // Reset player's health to maximum
+            playerTank.userData.health = PLAYER_DEFAULT_HEALTH;
+
+            // Reset power-up effects
+            activePowerups.speed.active = false;
+            activePowerups.speed.endTime = 0;
+            playerTank.userData.maxSpeed = TANK_TYPES.PLAYER.speed.maxSpeed;
+
+            // Reset score and stats
+            score = 0;
+            document.getElementById('score').textContent = 'Score: ' + score;
+
+            gameStats = {
+                enemiesDestroyed: 0,
+                shotsFired: 0,
+                hits: 0,
+                startTime: Date.now(),
+                gameTime: 0,
+                goldenTanksDestroyed: 0,
+                supplyCratesOpened: 0,
+                powerupsCollected: 0
+            };
+            updateStats();
+
+            // Reset game state
+            gameOver = false;
+            document.getElementById('info').textContent = 'WASD to move, Shift for precision turning, Space to fire, \\ to reset';
+
+            // Reset inventory
+            for (let i = 0; i < inventory.slots.length; i++) {
+                inventory.slots[i] = { type: null, count: 0 };
+            }
+
+            // Add 10 mines to the inventory
+            inventory.slots[0] = { type: 'mine', count: 10 };
+            inventory.slots[1] = { type: 'heatseeker', count: 10 };
+
+            updateInventoryDisplay();
+
+            // Remove all mines
+            if (window.mines) {
+                for (const mine of window.mines) {
+                    scene.remove(mine);
+                }
+                window.mines = [];
+            }
+        }
+
+        // Function to update game stats display
+        function updateStats() {
+            const statsElement = document.getElementById('stats');
+            const accuracy = gameStats.shotsFired > 0 ?
+                Math.round((gameStats.hits / gameStats.shotsFired) * 100) : 0;
+
+            // Calculate time
+            const currentTime = gameOver ? gameStats.gameTime : Date.now() - gameStats.startTime;
+            const seconds = Math.floor(currentTime / 1000);
+            const minutes = Math.floor(seconds / 60);
+            const remainingSeconds = seconds % 60;
+            const timeString = `${minutes}:${remainingSeconds.toString().padStart(2, '0')}`;
+
+            // Add power-up status
+            let powerupStatus = '';
+            if (activePowerups.speed.active) {
+                const timeLeft = Math.max(0, Math.floor((activePowerups.speed.endTime - Date.now()) / 1000));
+                powerupStatus += `<div style="color:#00BFFF">Speed Boost: ${timeLeft}s</div>`;
+            }
+
+            statsElement.innerHTML = `
+                <div>Enemies Destroyed: ${gameStats.enemiesDestroyed}</div>
+                <div>Golden Tanks Destroyed: ${gameStats.goldenTanksDestroyed}</div>
+                <div>Shots Fired: ${gameStats.shotsFired}</div>
+                <div>Accuracy: ${accuracy}%</div>
+                <div>Time: ${timeString}</div>
+                <div>Health: ${playerTank.userData.health}</div>
+                <div>Power-ups: ${gameStats.powerupsCollected}</div>
+                ${powerupStatus}
+            `;
+        }
+
+        // Check collision function
+        function checkCollision(obj1, obj2, radius = 2) {
+            // For player bullets hitting enemies, use a larger radius
+            if (obj1.userData && obj1.userData.isPlayerBullet && obj2.userData && !obj2.userData.isPlayer) {
+                return obj1.position.distanceTo(obj2.position) < 2.5; // Increased from 1.5 to 2.5 for easier hits
+            }
+            return obj1.position.distanceTo(obj2.position) < radius;
+        }
+
+        // Handle tank physics
+        function updateTankPhysics(tank, deltaTime) {
+            // Calculate the new position based on velocity
+            const newPosition = tank.position.clone().add(tank.userData.velocity.clone().multiplyScalar(deltaTime));
+
+            // Check if the new position is clear of obstacles
+            if (isPositionClear(newPosition, 1.5)) {
+                // If clear, apply the movement
+                tank.position.copy(newPosition);
+            } else {
+                // Improved collision response with sliding
+                // First try to move in just X direction
+                const xOnlyPosition = tank.position.clone();
+                xOnlyPosition.x = newPosition.x;
+
+                if (isPositionClear(xOnlyPosition, 1.5)) {
+                    tank.position.copy(xOnlyPosition);
+                    tank.userData.velocity.z = 0; // Stop z movement
+                } else {
+                    // Then try to move in just Z direction
+                    const zOnlyPosition = tank.position.clone();
+                    zOnlyPosition.z = newPosition.z;
+
+                    if (isPositionClear(zOnlyPosition, 1.5)) {
+                        tank.position.copy(zOnlyPosition);
+                        tank.userData.velocity.x = 0; // Stop x movement
+                    } else {
+                        // If both fail, apply stronger bounce with damping
+                        tank.userData.velocity.multiplyScalar(-0.4);
+                    }
+                }
+            }
+
+            // Apply angular velocity
+            tank.rotation.y += tank.userData.angularVelocity * deltaTime;
+
+            // Update direction vector based on rotation
+            tank.userData.direction.set(
+                Math.sin(tank.rotation.y),
+                0,
+                Math.cos(tank.rotation.y)
+            );
+
+            // Also update the turret direction to match the tank's direction
+            tank.userData.turretDirection.copy(tank.userData.direction);
+
+            // Apply deceleration
+            tank.userData.velocity.multiplyScalar(tank.userData.deceleration);
+            tank.userData.angularVelocity *= tank.userData.deceleration;
+
+            // Clamp velocity
+            const speed = tank.userData.velocity.length();
+            if (speed > tank.userData.maxSpeed) {
+                tank.userData.velocity.normalize().multiplyScalar(tank.userData.maxSpeed);
+            }
+
+            // Clamp angular velocity
+            if (Math.abs(tank.userData.angularVelocity) > tank.userData.maxAngularSpeed) {
+                tank.userData.angularVelocity = Math.sign(tank.userData.angularVelocity) * tank.userData.maxAngularSpeed;
+            }
+        }
+
+        // Update function for game loop
+        let lastTime = 0;
+        function animate(currentTime) {
+            requestAnimationFrame(animate);
+
+            // Calculate delta time for smooth animation
+            const deltaTime = lastTime ? (currentTime - lastTime) * 0.1 : 16.7;
+            lastTime = currentTime;
+
+            update(deltaTime);
+
+            // Update game time display if game is active
+            if (!gameOver) {
+                updateStats();
+            }
+
+            renderer.render(scene, camera);
+        }
+
+        // Handle window resize
+        window.addEventListener('resize', () => {
+            camera.aspect = window.innerWidth / window.innerHeight;
+            camera.updateProjectionMatrix();
+            renderer.setSize(window.innerWidth, window.innerHeight);
+        });
+
+
+        // Update function for game loop - modified to use tank types
+        function update(deltaTime) {
+            if (gameOver) return;
+
+            // Spawn regular enemies randomly
+            if (Math.random() < 0.005) {
+                spawnEnemy(TANK_TYPES.RED);
+            }
+
+            // Spawn golden tank rarely
+            if (Math.random() < TANK_TYPES.GOLDEN.spawnChance * (1 + 10*score/1000)) {
+                spawnGoldenTank();
+            }
+
+            // Spawn supply crates randomly (less frequently)
+            if (Math.random() < 0.001) {
+                createSupplyCrate();
+            }
+
+            // Update power-up timers
+            if (activePowerups.speed.active && Date.now() > activePowerups.speed.endTime) {
+                // Speed boost expired
+                activePowerups.speed.active = false;
+                playerTank.userData.maxSpeed = TANK_TYPES.PLAYER.speed.maxSpeed;
+                // Reset fire rate to normal
+                playerTank.userData.fireRate = TANK_TYPES.PLAYER.weapon.fireRate;
+                updateStats();
+            }
+
+            // Update powerups
+            for (let i = powerups.length - 1; i >= 0; i--) {
+                const powerup = powerups[i];
+
+                // Animate powerup
+                if (powerup.userData.animate) {
+                    powerup.userData.animate();
+                }
+
+                // Increase lifetime
+                powerup.userData.lifeTime++;
+
+                // Check for collection by player
+                if (checkCollision(powerup, playerTank, 2.5)) {
+                    // Collect the power-up
+                    collectPowerup(powerup);
+                    continue;
+                }
+
+                // Remove if too old
+                if (powerup.userData.lifeTime > powerup.userData.maxLifeTime) {
+                    scene.remove(powerup);
+                    powerups.splice(i, 1);
+                }
+            }
+
+            // Update player tank
+            if (keyState['w']) {
+                playerTank.userData.velocity.add(
+                    playerTank.userData.direction.clone().multiplyScalar(playerTank.userData.acceleration * deltaTime)
+                );
+            }
+            if (keyState['s']) {
+                playerTank.userData.velocity.add(
+                    playerTank.userData.direction.clone().multiplyScalar(-playerTank.userData.acceleration * deltaTime)
+                );
+            }
+
+            // Apply turning with shift modifier for precision control
+            let rotationMultiplier = 1.0;
+            if (keyState['shift']) {
+                // Reduce rotation speed by 70% when shift is pressed
+                rotationMultiplier = 0.3;
+
+                // Update info text to show precision mode
+                document.getElementById('info').textContent = 'WASD to move, Shift for precision turning, Space to fire, \\ to reset';
+            } else {
+                // Reset info text
+                document.getElementById('info').textContent = 'WASD to move, Shift for precision turning, Space to fire, \\ to reset';
+            }
+
+            // Handle rotation with acceleration
+            if (playerTank.userData.isRotatingLeft) {
+                playerTank.userData.rotationHoldTime.left += deltaTime;
+
+                // Calculate rotation speed based on hold time (starts small, increases with time)
+                let currentRotationSpeed = playerTank.userData.rotationSpeed;
+
+                // Apply acceleration if held longer than a quick tap
+                if (playerTank.userData.rotationHoldTime.left > 3) {
+                    const accelerationTime = Math.min(playerTank.userData.rotationHoldTime.left - 3, 20);
+                    currentRotationSpeed += playerTank.userData.rotationAcceleration * accelerationTime;
+
+                    // Cap at maximum rotation speed
+                    currentRotationSpeed = Math.min(currentRotationSpeed, playerTank.userData.maxRotationSpeed);
+                }
+
+                // Apply rotation with multiplier
+                playerTank.userData.angularVelocity += currentRotationSpeed * deltaTime * rotationMultiplier;
+            }
+
+            if (playerTank.userData.isRotatingRight) {
+                playerTank.userData.rotationHoldTime.right += deltaTime;
+
+                // Calculate rotation speed based on hold time (starts small, increases with time)
+                let currentRotationSpeed = playerTank.userData.rotationSpeed;
+
+                // Apply acceleration if held longer than a quick tap
+                if (playerTank.userData.rotationHoldTime.right > 3) {
+                    const accelerationTime = Math.min(playerTank.userData.rotationHoldTime.right - 3, 20);
+                    currentRotationSpeed += playerTank.userData.rotationAcceleration * accelerationTime;
+
+                    // Cap at maximum rotation speed
+                    currentRotationSpeed = Math.min(currentRotationSpeed, playerTank.userData.maxRotationSpeed);
+                }
+
+                // Apply rotation with multiplier
+                playerTank.userData.angularVelocity -= currentRotationSpeed * deltaTime * rotationMultiplier;
+            }
+
+            // Apply physics to player tank
+            updateTankPhysics(playerTank, deltaTime);
+
+            // Update enemy tanks - refactored to use tank types
+            for (let i = enemies.length - 1; i >= 0; i--) {
+                const enemy = enemies[i];
+
+                if (enemy.userData.type === 'golden') {
+                    // Golden tank AI is more sophisticated
+                    updateGoldenTankAI(enemy, deltaTime);
+                } else {
+                    // Standard enemy AI
+                    updateRedTankAI(enemy, deltaTime);
+                }
+
+                // Apply physics to enemy tank
+                updateTankPhysics(enemy, deltaTime);
+
+                // Check collision with player
+                if (checkCollision(enemy, playerTank, 3)) {
+                    // Simple bounce effect
+                    const normal = new THREE.Vector3().subVectors(
+                        enemy.position, playerTank.position
+                    ).normalize();
+
+                    enemy.position.add(normal.clone().multiplyScalar(0.1));
+                    playerTank.position.add(normal.clone().multiplyScalar(-0.1));
+
+                    enemy.userData.velocity.reflect(normal).multiplyScalar(0.5);
+                    playerTank.userData.velocity.reflect(normal).multiplyScalar(0.5);
+                }
+
+                // Check collision with other enemies
+                for (let j = 0; j < enemies.length; j++) {
+                    if (i !== j) {
+                        const otherEnemy = enemies[j];
+                        if (checkCollision(enemy, otherEnemy, 3)) {
+                            // Simple bounce effect
+                            const normal = new THREE.Vector3().subVectors(
+                                enemy.position, otherEnemy.position
+                            ).normalize();
+
+                            enemy.position.add(normal.clone().multiplyScalar(0.1));
+                            otherEnemy.position.add(normal.clone().multiplyScalar(-0.1));
+
+                            enemy.userData.velocity.reflect(normal).multiplyScalar(0.5);
+                            otherEnemy.userData.velocity.reflect(normal).multiplyScalar(0.5);
+                        }
+                    }
+                }
+            }
+
+            // Check for player collision with supply crates
+            for (let i = supplyCrates.length - 1; i >= 0; i--) {
+                const crate = supplyCrates[i];
+
+                if (checkCollision(playerTank, crate, 3)) {
+                    // Calculate damage based on crate health (higher health = more damage)
+                    // Starting health for crates is 30, so damage will scale between 3-10
+                    const damageToPlayer = Math.max(3, Math.floor(crate.userData.health / 3));
+
+                    // Player loses health when ramming into crate
+                    playerTank.userData.health -= damageToPlayer;
+
+                    // Show damage indicator
+                    showDamageIndicator(damageToPlayer);
+
+                    // Create break effect
+                    createExplosionEffect(crate.position.clone(), 0xFFFFFF, 0.8);
+
+                    // Crate opens - drop power-up
+                    createPowerup(crate.position.clone(), crate.userData.contents);
+
+                    // Remove crate
+                    scene.remove(crate);
+                    supplyCrates.splice(i, 1);
+
+                    // Update stats
+                    gameStats.supplyCratesOpened++;
+                    updateStats();
+
+                    // Add small score
+                    score += 5;
+                    document.getElementById('score').textContent = 'Score: ' + score;
+
+                    // Check if player is defeated from the damage
+                    if (playerTank.userData.health <= 0) {
+                        // Game over
+                        gameOver = true;
+                        gameStats.gameTime = Date.now() - gameStats.startTime;
+                        updateStats();
+                        document.getElementById('info').textContent = 'Game Over! Press \\ to restart';
+                    }
+                }
+            }
+
+            // Update bullets
+            for (let i = bullets.length - 1; i >= 0; i--) {
+                const bullet = bullets[i];
+
+                // Special handling for heat-seeking missiles
+                if (bullet.userData && bullet.userData.isHeatSeeker) {
+                    // Update smoke trail
+                    if (bullet.userData.updateTrail) {
+                        bullet.userData.updateTrail();
+                    }
+
+                    // Track target if one exists
+                    if (bullet.userData.target && enemies.includes(bullet.userData.target)) {
+                        // Calculate direction to target
+                        const targetPos = bullet.userData.target.position.clone();
+                        const missilePos = bullet.position.clone();
+                        const toTarget = new THREE.Vector3().subVectors(targetPos, missilePos).normalize();
+
+                        // Very aggressive turning - directly adjust direction toward target
+                        // Use 0.6 of current direction and 0.4 of direction to target for sharp turns
+                        bullet.userData.direction.multiplyScalar(0.6);
+                        toTarget.multiplyScalar(0.4);
+                        bullet.userData.direction.add(toTarget).normalize();
+
+                        // Update missile rotation to match its direction of travel
+                        bullet.rotation.y = Math.atan2(bullet.userData.direction.x, bullet.userData.direction.z);
+                    }
+                }
+
+                // Move bullet
+                bullet.position.add(
+                    bullet.userData.direction.clone().multiplyScalar(bullet.userData.speed * deltaTime)
+                );
+
+                // Increase lifetime
+                bullet.userData.lifeTime++;
+
+                // Remove bullet if it's too old
+                if (bullet.userData.lifeTime > bullet.userData.maxLifeTime) {
+                    removeBullet(bullet, i);
+                    continue;
+                }
+
+                // Check collisions with obstacles first
+                let bulletHitObstacle = false;
+
+                for (let j = 0; j < obstacles.length; j++) {
+                    const obstacle = obstacles[j];
+
+                    // Simple box-sphere collision for box obstacles
+                    if (obstacle.userData.shape === 'box') {
+                        const halfWidth = obstacle.userData.dimensions.width / 2;
+                        const halfHeight = obstacle.userData.dimensions.height / 2;
+                        const halfDepth = obstacle.userData.dimensions.depth / 2;
+
+                        // Find closest point on box to the bullet
+                        const closestX = Math.max(obstacle.position.x - halfWidth, Math.min(bullet.position.x, obstacle.position.x + halfWidth));
+                        const closestY = Math.max(obstacle.position.y - halfHeight, Math.min(bullet.position.y, obstacle.position.y + halfHeight));
+                        const closestZ = Math.max(obstacle.position.z - halfDepth, Math.min(bullet.position.z, obstacle.position.z + halfDepth));
+
+                        // Calculate distance to the closest point
+                        const distance = Math.sqrt(
+                            (bullet.position.x - closestX) * (bullet.position.x - closestX) +
+                            (bullet.position.y - closestY) * (bullet.position.y - closestY) +
+                            (bullet.position.z - closestZ) * (bullet.position.z - closestZ)
+                        );
+
+                        // If distance is less than bullet radius, there's a collision
+                        if (distance < 0.2) {
+                            // Handle destructible obstacles
+                            if (obstacle.userData.destructible) {
+                                obstacle.userData.health -= 25; // Damage from bullet
+
+                                if (obstacle.userData.health <= 0) {
+                                    // Remove the obstacle
+                                    scene.remove(obstacle);
+                                    obstacles.splice(j, 1);
+                                    j--; // Adjust index after removal
+
+                                    // Add score for destroying obstacle
+                                    if (bullet.userData.isPlayerBullet) {
+                                        const scoreAmount = 5;
+                                        score += scoreAmount;
+                                        document.getElementById('score').textContent = 'Score: ' + score;
+                                        showScorePopup(obstacle.position.x, obstacle.position.y, obstacle.position.z, scoreAmount);
+                                    }
+                                }
+                            }
+
+                            // Remove the bullet
+                            removeBullet(bullet, i);
+                            bulletHitObstacle = true;
+                            break;
+                        }
+                    }
+                }
+
+                // Only check other collisions if bullet didn't hit an obstacle
+                if (!bulletHitObstacle) {
+                    // Check collisions with supply crates
+                    if (bullet.userData.isPlayerBullet) {
+                        // Check supply crates first - ENSURE THIS IS BEFORE ENEMY CHECKS
+                        for (let j = supplyCrates.length - 1; j >= 0; j--) {
+                            const crate = supplyCrates[j];
+                            // Use a more generous hit radius for crates to make them easier to hit
+                            if (checkCollision(bullet, crate, 2.5)) {
+                                console.log("Hit supply crate!"); // Debug logging
+
+                                // Damage the crate
+                                crate.userData.health -= 15; // Slightly more damage
+
+                                // Create a small impact effect
+                                createExplosionEffect(bullet.position.clone(), 0xFFFFFF, 0.5);
+
+                                if (crate.userData.health <= 0) {
+                                    console.log("Crate destroyed! Dropping powerup: " + crate.userData.contents); // Debug
+
+                                    // Crate is destroyed - drop power-up
+                                    createPowerup(crate.position.clone(), crate.userData.contents);
+
+                                    // Remove crate
+                                    scene.remove(crate);
+                                    supplyCrates.splice(j, 1);
+
+                                    // Update stats
+                                    gameStats.supplyCratesOpened++;
+                                    updateStats();
+
+                                    // Add small score
+                                    score += 5;
+                                    document.getElementById('score').textContent = 'Score: ' + score;
+                                }
+
+                                // Remove bullet
+                                removeBullet(bullet, i);
+
+                                // Skip checking other collisions for this bullet
+                                bulletHitObstacle = true;
+                                break;
+                            }
+                        }
+
+                        // If bullet already hit something, skip enemy checks
+                        if (bulletHitObstacle) {
+                            continue;
+                        }
+
+                        // Check collision with enemies
+                        for (let j = enemies.length - 1; j >= 0; j--) {
+                            const enemy = enemies[j];
+                            if (checkCollision(bullet, enemy, 2.5)) {
+                                // Handle damage based on bullet's damage value
+                                const damage = bullet.userData.damage || 50; // Use bullet's damage or default to 50
+                                enemy.userData.health -= damage;
+
+                                // Create hit effect if tank has one defined
+                                if (enemy.userData.type === 'golden') {
+                                    createExplosionEffect(
+                                        bullet.position.clone(),
+                                        TANK_TYPES.GOLDEN.hitEffect.color,
+                                        TANK_TYPES.GOLDEN.hitEffect.size
+                                    );
+                                }
+
+                                if (enemy.userData.health <= 0) {
+                                    // Remove enemy
+                                    scene.remove(enemy);
+                                    enemies.splice(j, 1);
+
+                                    // Special destruction effect for special tanks
+                                    if (enemy.userData.type === 'golden') {
+                                        createExplosionEffect(
+                                            enemy.position.clone(),
+                                            TANK_TYPES.GOLDEN.destroyEffect.color,
+                                            TANK_TYPES.GOLDEN.destroyEffect.size
+                                        );
+                                    }
+
+                                    // Increase score based on tank value
+                                    const scoreAmount = enemy.userData.scoreValue;
+                                    score += scoreAmount;
+                                    document.getElementById('score').textContent = 'Score: ' + score;
+
+                                    // Show score popup
+                                    showScorePopup(enemy.position.x, enemy.position.y, enemy.position.z, scoreAmount);
+
+                                    // Update stats
+                                    gameStats.enemiesDestroyed++;
+                                    if (enemy.userData.type === 'golden') {
+                                        gameStats.goldenTanksDestroyed++;
+                                    }
+                                    gameStats.hits++;
+                                    updateStats();
+                                }
+
+                                // Remove bullet
+                                removeBullet(bullet, i);
+                                break;
+                            }
+                        }
+                    } else {
+                        // Check collision with player
+                        if (checkCollision(bullet, playerTank, 1.5)) {
+                            // Apply damage based on bullet's damage value
+                            const damage = bullet.userData.damage || 20; // Default to 20 if somehow undefined
+                            playerTank.userData.health -= damage;
+
+                            // Create hit effect
+                            createExplosionEffect(bullet.position.clone(), 0xFF0000, 0.7);
+
+                            // Show damage taken indicator
+                            showDamageIndicator(damage);
+
+                            // Check if player is defeated
+                            if (playerTank.userData.health <= 0) {
+                                // Game over
+                                gameOver = true;
+                                gameStats.gameTime = Date.now() - gameStats.startTime;
+                                updateStats();
+                                document.getElementById('info').textContent = 'Game Over! Press \\ to restart';
+
+                                // Add high score effect
+                                if (score > 0) {
+                                    const scoreElement = document.getElementById('score');
+                                    scoreElement.style.fontSize = '32px';
+                                    scoreElement.style.color = '#FFD700'; // Gold color
+                                    scoreElement.textContent = `Final Score: ${score}`;
+                                }
+                            }
+
+                            // Remove bullet
+                            removeBullet(bullet, i);
+                            break;
+                        }
+                    }
+                }
+            }
+
+            // Update camera to follow player - higher camera for city view
+            const cameraOffset = new THREE.Vector3(0, 15, -20); // Higher and further back
+            cameraOffset.applyAxisAngle(new THREE.Vector3(0, 1, 0), playerTank.rotation.y);
+            camera.position.copy(playerTank.position).add(cameraOffset);
+            camera.lookAt(playerTank.position);
+
+            // Update radar
+            updateRadar();
+
+            // Update mines
+            if (window.mines && window.mines.length > 0) {
+                for (let i = window.mines.length - 1; i >= 0; i--) {
+                    const mine = window.mines[i];
+
+                    // Pulse effect if armed
+                    if (mine.userData.armed && mine.userData.pulse) {
+                        mine.userData.pulse();
+                    }
+
+                    // Check if any enemy is near the mine
+                    if (mine.userData.armed) {
+                        for (const enemy of enemies) {
+                            const distance = enemy.position.distanceTo(mine.position);
+                            if (distance < 2) {
+                                detonateMine(mine);
+                                break;
+                            }
+                        }
+                    }
+                }
+            }
+        }
+
+        // Radar update function
+        function updateRadar() {
+            const radarElement = document.getElementById('radar');
+
+            // Clear previous enemy dots (except the player and sweep)
+            const enemyDots = radarElement.querySelectorAll('.radar-enemy');
+            enemyDots.forEach(dot => dot.remove());
+
+            // Add enemy dots based on current positions
+            for (const enemy of enemies) {
+                const enemyDot = document.createElement('div');
+                enemyDot.className = 'radar-enemy';
+
+                // Set color based on tank type
+                if (enemy.userData.type === 'golden') {
+                    enemyDot.style.backgroundColor = '#FFD700'; // Gold color
+                }
+                // Red tanks will use the default color from CSS
+
+                // Calculate relative position from player to enemy
+                // This gives us the vector pointing from player to enemy in world coordinates
+                const relX = enemy.position.x - playerTank.position.x;
+                const relZ = enemy.position.z - playerTank.position.z;
+
+                // Calculate distance (used for radar range check)
+                const distance = Math.sqrt(relX * relX + relZ * relZ);
+
+                // --- RADAR COORDINATE TRANSFORMATION ---
+                // We need to:
+                // 1. Transform from world coordinates to player's local coordinates
+                // 2. Handle the coordinate system differences between 3D world and 2D radar
+
+                // The angle is just the negative of player's rotation
+                // This effectively rotates the world so the player is always facing "up"
+                const angle = -playerTank.rotation.y;
+
+                // Apply rotation matrix with X-axis mirroring to correct orientation
+                // This ensures left in the game world is left on the radar
+                const rotatedX = -relX * Math.cos(angle) - relZ * Math.sin(angle);
+                const rotatedZ = -relX * Math.sin(angle) + relZ * Math.cos(angle);
+
+                // Scale to radar (50 units in game = 75px on radar radius)
+                const radarScale = 75 / 50;
+
+                // Map to radar pixel coordinates (centered at 75,75)
+                // Negate Z because in screen coordinates Y increases downward
+                const radarX = 75 + rotatedX * radarScale;
+                const radarY = 75 - rotatedZ * radarScale;
+
+                // Only show enemies within radar range
+                if (distance < 50) {
+                    enemyDot.style.left = `${radarX}px`;
+                    enemyDot.style.top = `${radarY}px`;
+                    radarElement.appendChild(enemyDot);
+                }
+            }
+        }
+
+        // Add score popup function
+        function showScorePopup(x, y, z, amount) {
+            // Create a div for the score popup
+            const popupElement = document.createElement('div');
+            popupElement.style.position = 'absolute';
+            popupElement.style.color = '#FFD700'; // Gold color
+            popupElement.style.fontSize = '24px';
+            popupElement.style.fontWeight = 'bold';
+            popupElement.style.textShadow = '2px 2px 4px rgba(0, 0, 0, 0.7)';
+            popupElement.style.pointerEvents = 'none';
+            popupElement.textContent = `+${amount}`;
+            document.body.appendChild(popupElement);
+
+            // Convert 3D position to screen coordinates
+            const vector = new THREE.Vector3(x, y + 3, z); // Position above the tank
+            vector.project(camera);
+
+            const screenX = (vector.x * 0.5 + 0.5) * window.innerWidth;
+            const screenY = (-vector.y * 0.5 + 0.5) * window.innerHeight;
+
+            popupElement.style.left = `${screenX}px`;
+            popupElement.style.top = `${screenY}px`;
+
+            // Animate and remove after a short time
+            let opacity = 1;
+            let posY = screenY;
+
+            const animatePopup = () => {
+                opacity -= 0.02;
+                posY -= 1;
+
+                popupElement.style.opacity = opacity;
+                popupElement.style.top = `${posY}px`;
+
+                if (opacity > 0) {
+                    requestAnimationFrame(animatePopup);
+                } else {
+                    document.body.removeChild(popupElement);
+                }
+            };
+
+            requestAnimationFrame(animatePopup);
+        }
+
+        // Red tank AI function
+        function updateRedTankAI(enemy, deltaTime) {
+            const config = TANK_TYPES.RED;
+
+            // Basic AI: move towards player sometimes, random movement other times
+            if (Math.random() < config.ai.directionChangeChance) {
+                // Calculate direction to player
+                const dirToPlayer = new THREE.Vector3().subVectors(playerTank.position, enemy.position).normalize();
+
+                // Either move towards or away from player
+                if (Math.random() < config.ai.chasePlayerChance) {
+                    enemy.userData.direction = dirToPlayer;
+                } else {
+                    enemy.userData.direction = dirToPlayer.negate();
+                }
+
+                // Set rotation to match direction
+                enemy.rotation.y = Math.atan2(enemy.userData.direction.x, enemy.userData.direction.z);
+            }
+
+            // Move enemy
+            enemy.userData.velocity.add(
+                enemy.userData.direction.clone().multiplyScalar(enemy.userData.acceleration * deltaTime)
+            );
+
+            // Update enemy turret to face player
+            enemy.userData.turretDirection = new THREE.Vector3().subVectors(
+                playerTank.position, enemy.position
+            ).normalize();
+
+            // Enemy fires randomly
+            if (Math.random() < config.ai.firingChance && enemy.userData.canFire) {
+                fireBullet(enemy);
+                enemy.userData.canFire = false;
+                enemy.userData.lastFired = Date.now();
+
+                setTimeout(() => {
+                    if (enemies.includes(enemy)) { // Check if enemy still exists
+                        enemy.userData.canFire = true;
+                    }
+                }, enemy.userData.fireRate);
+            }
+        }
+
+        // Golden tank AI function - modified to prevent direction flipping
+        function updateGoldenTankAI(tank, deltaTime) {
+            const config = TANK_TYPES.GOLDEN;
+
+            // Update AI state periodically
+            if (Date.now() - tank.userData.stateChangeTime > config.ai.stateChangeDuration) {
+                // Use the predefined state probabilities to determine next state
+                const randValue = Math.random();
+                let cumulativeProbability = 0;
+
+                for (let i = 0; i < config.ai.states.length; i++) {
+                    cumulativeProbability += config.ai.stateChances[i];
+                    if (randValue < cumulativeProbability) {
+                        tank.userData.aiState = config.ai.states[i];
+                        break;
+                    }
+                }
+
+                tank.userData.stateChangeTime = Date.now();
+
+                // Set a new flank direction when changing state
+                // This makes the direction persist until the next state change
+                tank.userData.flankDirection = Math.random() < 0.4 ? -1 : 1;
+            }
+
+            // Initialize flank direction if it doesn't exist
+            if (tank.userData.flankDirection === undefined) {
+                tank.userData.flankDirection = Math.random() < 0.4 ? -1 : 1;
+            }
+
+            // Store player's last position to calculate velocity
+            const playerVelocity = new THREE.Vector3().subVectors(
+                playerTank.position, tank.userData.lastPlayerPos
+            ).multiplyScalar(0.1); // Scale for prediction
+            tank.userData.lastPlayerPos = playerTank.position.clone();
+
+            // Calculate direction to player with prediction
+            const predictedPosition = playerTank.position.clone().add(
+                playerVelocity.clone().multiplyScalar(tank.userData.targetPrediction)
+            );
+
+            const dirToPlayer = new THREE.Vector3().subVectors(
+                predictedPosition, tank.position
+            ).normalize();
+
+            // Act based on current state
+            switch (tank.userData.aiState) {
+                case 'chase':
+                    // Chase player directly
+                    tank.userData.direction = dirToPlayer;
+                    tank.userData.reverse = false;
+                    break;
+
+                case 'flank':
+                    // Try to move perpendicular to player using the persistent flank direction
+                    const perpVector = new THREE.Vector3(-dirToPlayer.z, 0, dirToPlayer.x);
+                    // Use the stored flank direction instead of generating a new one each frame
+                    if (tank.userData.flankDirection < 0) perpVector.negate();
+                    tank.userData.direction = perpVector;
+                    tank.userData.reverse = false;
+                    break;
+
+                case 'retreat':
+                    // Move away from player but STILL FACE THE PLAYER
+                    const retreatDir = dirToPlayer.clone();
+                    tank.userData.direction = retreatDir;
+                    tank.userData.reverse = true;
+
+                    // Prevent retreating too far away
+                    const distanceToPlayer = tank.position.distanceTo(playerTank.position);
+                    if (distanceToPlayer > 60) {
+                        // If too far, switch to flanking instead of retreating
+                        tank.userData.aiState = 'flank';
+                        const perpVector = new THREE.Vector3(-dirToPlayer.z, 0, dirToPlayer.x);
+                        if (tank.userData.flankDirection < 0) perpVector.negate();
+                        tank.userData.direction = perpVector;
+                    }
+                    break;
+            }
+
+            // Additional boundary check to keep tanks on screen
+            const distanceToCenter = tank.position.length();
+            if (distanceToCenter > 90) {
+                // If too far from center, redirect toward center
+                const dirToCenter = new THREE.Vector3().copy(tank.position).negate().normalize();
+                tank.userData.direction.lerp(dirToCenter, 0.2); // Gradually turn toward center
+            }
+
+            // Set rotation to match direction
+            tank.rotation.y = Math.atan2(tank.userData.direction.x, tank.userData.direction.z);
+
+            // Move tank (with support for reverse)
+            const accelerationFactor = tank.userData.reverse ? -1 : 1;
+            tank.userData.velocity.add(
+                tank.userData.direction.clone().multiplyScalar(accelerationFactor * tank.userData.acceleration * deltaTime)
+            );
+
+            // Turret always aims at predicted player position
+            tank.userData.turretDirection = dirToPlayer;
+
+            // Golden tank fires more aggressively when it has line of sight
+            const hasLineOfSight = checkLineOfSight(tank.position, playerTank.position);
+
+            if (hasLineOfSight && tank.userData.canFire) {
+                // Higher chance to fire when has line of sight
+                if (Math.random() < config.ai.firingChance) {
+                    fireBullet(tank);
+                    tank.userData.canFire = false;
+                    tank.userData.lastFired = Date.now();
+
+                    setTimeout(() => {
+                        if (enemies.includes(tank)) { // Check if tank still exists
+                            tank.userData.canFire = true;
+                        }
+                    }, tank.userData.fireRate);
+                }
+            }
+        }
+
+        // Check line of sight between two positions
+        function checkLineOfSight(startPos, endPos) {
+            // Direction vector
+            const direction = new THREE.Vector3().subVectors(endPos, startPos).normalize();
+
+            // Distance to check
+            const distance = startPos.distanceTo(endPos);
+
+            // Create a raycaster
+            const raycaster = new THREE.Raycaster(startPos, direction, 0.1, distance);
+
+            // Check intersections with obstacles
+            const intersects = raycaster.intersectObjects(obstacles);
+
+            // If there are no intersections, there's a clear line of sight
+            return intersects.length === 0;
+        }
+
+        // Function to create a supply crate
+        function createSupplyCrate() {
+            if (gameOver) return;
+
+            // Random position away from player
+            let x, z;
+            let validPosition = false;
+            let attempts = 0;
+            const maxAttempts = 30;
+
+            do {
+                x = (Math.random() - 0.5) * 180;
+                z = (Math.random() - 0.5) * 180;
+
+                // Check if position is away from player
+                const distToPlayer = Math.sqrt(
+                    Math.pow(x - playerTank.position.x, 2) +
+                    Math.pow(z - playerTank.position.z, 2)
+                );
+
+                // Ensure it's not too close or too far
+                const awayFromPlayer = distToPlayer > 20 && distToPlayer < 100;
+
+                // Check if position is clear of obstacles
+                const positionClear = isPositionClear(new THREE.Vector3(x, 1.5, z), 3);
+
+                validPosition = awayFromPlayer && positionClear;
+                attempts++;
+
+                if (attempts >= maxAttempts && !validPosition) {
+                    console.log("Failed to find valid position for supply crate");
+                    return;
+                }
+            } while (!validPosition);
+
+            // Create the crate model
+            const crateSize = 2;
+            const crateGeometry = new THREE.BoxGeometry(crateSize, crateSize, crateSize);
+            const crateMaterial = new THREE.MeshStandardMaterial({
+                color: 0x8B4513,  // Brown wood color
+                metalness: 0.3,
+                roughness: 0.8
+            });
+
+            const crate = new THREE.Mesh(crateGeometry, crateMaterial);
+            crate.position.set(x, crateSize/2, z);
+            crate.castShadow = true;
+            crate.receiveShadow = true;
+
+            // Add details to crate - logo/markings
+            const detailGeometry = new THREE.PlaneGeometry(crateSize * 0.8, crateSize * 0.8);
+            const detailMaterial = new THREE.MeshStandardMaterial({
+                color: 0xFFD700,  // Gold
+                metalness: 0.7,
+                roughness: 0.3,
+                emissive: 0xFFD700,
+                emissiveIntensity: 0.3
+            });
+
+            // Add logos to each side
+            const sides = [
+                { pos: [0, 0, crateSize/2 + 0.01], rot: [0, 0, 0] },
+                { pos: [0, 0, -crateSize/2 - 0.01], rot: [0, Math.PI, 0] },
+                { pos: [crateSize/2 + 0.01, 0, 0], rot: [0, Math.PI/2, 0] },
+                { pos: [-crateSize/2 - 0.01, 0, 0], rot: [0, -Math.PI/2, 0] }
+            ];
+
+            sides.forEach(side => {
+                const detail = new THREE.Mesh(detailGeometry, detailMaterial);
+                detail.position.set(...side.pos);
+                detail.rotation.set(...side.rot);
+                crate.add(detail);
+            });
+
+            // Add crate metadata
+            crate.userData = {
+                type: 'supply_crate',
+                health: 30,
+                contents: getRandomCrateContents()  // Using new function for random contents
+            };
+
+            scene.add(crate);
+            supplyCrates.push(crate);
+
+            // Create visual effect for crate landing
+            createSupplyCrateEffect(crate.position.clone());
+
+            return crate;
+        }
+
+        // Function to get random crate contents with appropriate probabilities
+        function getRandomCrateContents() {
+            // Define possible contents with their weights (logits)
+            const possibleContents = [
+                { type: 'speed', weight: 35 },
+                { type: 'health', weight: 35 },
+                { type: 'mine', weight: 20 },
+                { type: 'heatseeker', weight: 10 }
+            ];
+
+            // Calculate total weight
+            const totalWeight = possibleContents.reduce((sum, item) => sum + item.weight, 0);
+
+            // Generate random number within the total weight range
+            const rand = Math.random() * totalWeight;
+
+            // Find the appropriate content based on weight
+            let accumulatedWeight = 0;
+
+            for (const content of possibleContents) {
+                accumulatedWeight += content.weight;
+                if (rand < accumulatedWeight) {
+                    return content.type;
+                }
+            }
+
+            // Fallback (should never happen if weights are positive)
+            return 'health';
+        }
+
+        // Function to create visual effect when a supply crate lands
+        function createSupplyCrateEffect(position) {
+            const particles = [];
+            const particleCount = 15;
+
+            for (let i = 0; i < particleCount; i++) {
+                const particle = new THREE.Mesh(
+                    new THREE.SphereGeometry(0.1, 8, 8),
+                    new THREE.MeshBasicMaterial({
+                        color: 0xDDDDDD,
+                        transparent: true,
+                        opacity: 1
+                    })
+                );
+
+                particle.position.copy(position);
+                particle.position.y = 0.1;
+
+                // Random outward direction
+                const angle = Math.random() * Math.PI * 2;
+                const speed = 0.03 + Math.random() * 0.05;
+
+                particle.userData = {
+                    velocity: new THREE.Vector3(
+                        Math.cos(angle) * speed,
+                        0.1 + Math.random() * 0.1,  // Upward
+                        Math.sin(angle) * speed
+                    ),
+                    life: 20 + Math.floor(Math.random() * 15)
+                };
+
+                scene.add(particle);
+                particles.push(particle);
+            }
+
+            // Animation loop for particles
+            function updateParticles() {
+                let allDead = true;
+
+                for (let i = particles.length - 1; i >= 0; i--) {
+                    const particle = particles[i];
+
+                    // Add gravity
+                    particle.userData.velocity.y -= 0.01;
+
+                    particle.position.add(particle.userData.velocity);
+
+                    // Ground collision
+                    if (particle.position.y < 0.1) {
+                        particle.position.y = 0.1;
+                        particle.userData.velocity.y = -particle.userData.velocity.y * 0.3;
+                        particle.userData.velocity.x *= 0.9;
+                        particle.userData.velocity.z *= 0.9;
+                    }
+
+                    particle.userData.life--;
+
+                    // Fade out
+                    particle.material.opacity = particle.userData.life / 20;
+
+                    // Remove dead particles
+                    if (particle.userData.life <= 0) {
+                        scene.remove(particle);
+                        particles.splice(i, 1);
+                    } else {
+                        allDead = false;
+                    }
+                }
+
+                if (!allDead) {
+                    requestAnimationFrame(updateParticles);
+                }
+            }
+
+            updateParticles();
+        }
+
+        // Function to create a power-up from a destroyed crate
+        function createPowerup(position, type) {
+            let powerupGeometry;
+            let powerupMaterial;
+
+            if (type === 'speed') {
+                // Speed boost - blue lightning bolt
+                powerupGeometry = new THREE.SphereGeometry(0.8, 16, 16);
+                powerupMaterial = new THREE.MeshStandardMaterial({
+                    color: 0x00BFFF,  // Deep Sky Blue
+                    emissive: 0x00BFFF,
+                    emissiveIntensity: 0.5,
+                    metalness: 0.9,
+                    roughness: 0.2
+                });
+            } else if (type === 'health') {
+                // Health boost - red cross
+                powerupGeometry = new THREE.SphereGeometry(0.8, 16, 16);
+                powerupMaterial = new THREE.MeshStandardMaterial({
+                    color: 0xFF0000,  // Red
+                    emissive: 0xFF0000,
+                    emissiveIntensity: 0.5,
+                    metalness: 0.6,
+                    roughness: 0.3
+                });
+            } else if (type === 'mine') {
+                // Mine - dark metal with warning symbols
+                powerupGeometry = new THREE.CylinderGeometry(0.8, 0.8, 0.4, 16);
+                powerupMaterial = new THREE.MeshStandardMaterial({
+                    color: 0x444444,  // Dark gray
+                    emissive: 0xFF5500,
+                    emissiveIntensity: 0.3,
+                    metalness: 0.8,
+                    roughness: 0.4
+                });
+            } else if (type === 'heatseeker') {
+                // Heat-seeking missile - orange/red missile shape
+                powerupGeometry = new THREE.ConeGeometry(0.5, 1.2, 8);
+                powerupMaterial = new THREE.MeshStandardMaterial({
+                    color: 0xFF6600,  // Orange
+                    emissive: 0xFF4400,
+                    emissiveIntensity: 0.4,
+                    metalness: 0.7,
+                    roughness: 0.3
+                });
+            }
+
+            const powerup = new THREE.Mesh(powerupGeometry, powerupMaterial);
+            powerup.position.copy(position);
+            powerup.position.y = 1;  // Float above ground
+
+            // Add icon to the power-up
+            const iconGeometry = new THREE.PlaneGeometry(1, 1);
+            let iconMaterial;
+
+            if (type === 'speed') {
+                iconMaterial = new THREE.MeshBasicMaterial({
+                    color: 0xFFFFFF,
+                    transparent: true,
+                    opacity: 0.9,
+                    side: THREE.DoubleSide
+                });
+
+                // Could add a custom texture for lightning bolt here
+            } else if (type === 'health') {
+                iconMaterial = new THREE.MeshBasicMaterial({
+                    color: 0xFFFFFF,
+                    transparent: true,
+                    opacity: 0.9,
+                    side: THREE.DoubleSide
+                });
+
+                // Could add a custom texture for health cross here
+            } else if (type === 'mine') {
+                iconMaterial = new THREE.MeshBasicMaterial({
+                    color: 0xFF5500,
+                    transparent: true,
+                    opacity: 0.9,
+                    side: THREE.DoubleSide
+                });
+
+                // Add warning stripes to the mine
+                const warningStripes = new THREE.Mesh(
+                    new THREE.TorusGeometry(0.6, 0.1, 8, 16),
+                    new THREE.MeshBasicMaterial({ color: 0xFFFF00 })
+                );
+                warningStripes.rotation.x = Math.PI/2;
+                powerup.add(warningStripes);
+            } else if (type === 'heatseeker') {
+                iconMaterial = new THREE.MeshBasicMaterial({
+                    color: 0xFFFF00,
+                    transparent: true,
+                    opacity: 0.9,
+                    side: THREE.DoubleSide
+                });
+                // Add fins to the missile
+                const fins = new THREE.Mesh(
+                    new THREE.BoxGeometry(0.8, 0.1, 0.3),
+                    new THREE.MeshBasicMaterial({ color: 0xFF3300 })
+                );
+                fins.position.y = -0.4;
+                powerup.add(fins);
+            }
+
+            const icon = new THREE.Mesh(iconGeometry, iconMaterial);
+            icon.position.set(0, 0, 0.81);  // Slightly in front of sphere
+            powerup.add(icon);
+
+            // Add metadata
+            powerup.userData = {
+                type: 'powerup',
+                powerupType: type,
+                lifeTime: 0,
+                maxLifeTime: 600  // 10 seconds at 60 fps
+            };
+
+            // Add animation
+            const animatePowerup = () => {
+                powerup.rotation.y += 0.02;
+                powerup.position.y = 1 + Math.sin(Date.now() * 0.003) * 0.2;  // Floating effect
+            };
+
+            powerup.userData.animate = animatePowerup;
+
+            scene.add(powerup);
+            powerups.push(powerup);
+
+            return powerup;
+        }
+
+        // Function to apply a power-up effect
+        function applyPowerup(type) {
+            // Apply the power-up effect based on type
+            switch(type) {
+                case 'speed':
+                    // Apply speed boost
+                    activePowerups.speed.active = true;
+                    activePowerups.speed.endTime = Date.now() + activePowerups.speed.duration;
+
+                    // Set player speed to boosted value
+                    playerTank.userData.maxSpeed = TANK_TYPES.PLAYER.speed.maxSpeed * activePowerups.speed.multiplier;
+
+                    // Also boost fire rate proportionally to speed boost
+                    playerTank.userData.fireRate = TANK_TYPES.PLAYER.weapon.fireRate / activePowerups.speed.multiplier;
+
+                    updateStats();
+                    break;
+                case 'health':
+                    // Add health to player's tank (up to max)
+                    const originalHealth = playerTank.userData.health;
+                    playerTank.userData.health = originalHealth + activePowerups.health.amount;
+                    console.log("Health after boost:", playerTank.userData.health);
+
+                    // Visual feedback
+                    showPowerupMessage(`Health +${activePowerups.health.amount}`, "#FF0000");
+                    break;
+                case 'mine':
+                    // Place a mine at the player's position
+                    placeMine(playerTank.position.clone());
+
+                    // Visual feedback
+                    showPowerupMessage("Mine Deployed!", "#FF5500");
+                    break;
+                case 'heatseeker':
+                    // Fire a heat-seeking missile
+                    if (playerTank.userData.canFire) {
+                        fireHeatSeekingMissile(playerTank);
+                        gameStats.shotsFired++;
+
+                        // Visual feedback
+                        showPowerupMessage("Heat-Seeking Missile Fired!", "#FF6600");
+
+                        // Add cooldown like normal firing
+                        playerTank.userData.canFire = false;
+                        playerTank.userData.lastFired = Date.now();
+                        setTimeout(() => {
+                            playerTank.userData.canFire = true;
+                        }, playerTank.userData.fireRate);
+                    } else {
+                        // If can't fire, let the player know
+                        showPowerupMessage("Weapon Cooling Down!", "#FF0000");
+                    }
+                    break;
+            }
+
+            // Update stats
+            gameStats.powerupsCollected++;
+            updateStats();
+        }
+
+        // Function to place a mine
+        function placeMine(position) {
+            // Create mine mesh
+            const mineGeometry = new THREE.CylinderGeometry(1, 1, 0.4, 16);
+            const mineMaterial = new THREE.MeshStandardMaterial({
+                color: 0x444444,
+                metalness: 0.8,
+                roughness: 0.4
+            });
+
+            const mine = new THREE.Mesh(mineGeometry, mineMaterial);
+
+            // Position slightly above ground to avoid z-fighting
+            mine.position.copy(position);
+            mine.position.y = 0.2;
+
+            // Add warning markings
+            const warningGeometry = new THREE.RingGeometry(0.4, 0.8, 16);
+            const warningMaterial = new THREE.MeshBasicMaterial({
+                color: 0xFFFF00,
+                side: THREE.DoubleSide
+            });
+
+            const warningMark = new THREE.Mesh(warningGeometry, warningMaterial);
+            warningMark.rotation.x = -Math.PI/2; // Lay flat on top of mine
+            warningMark.position.y = 0.21;
+            mine.add(warningMark);
+
+            // Add mine metadata
+            mine.userData = {
+                type: 'mine',
+                damage: activePowerups.mine.damage,
+                radius: activePowerups.mine.radius,
+                placedBy: 'player',
+                armed: false
+            };
+
+            // Arm after a short delay (so player can move away)
+            setTimeout(() => {
+                if (mine.userData) {
+                    mine.userData.armed = true;
+
+                    // Add subtle pulsing effect to show it's armed
+                    const pulse = () => {
+                        warningMark.material.opacity = 0.7 + Math.sin(Date.now() * 0.005) * 0.3;
+                        warningMark.material.transparent = true;
+                    };
+
+                    mine.userData.pulse = pulse;
+                }
+            }, 1500);
+
+            scene.add(mine);
+
+            // Add to new mines array
+            if (!window.mines) window.mines = [];
+            window.mines.push(mine);
+
+            return mine;
+        }
+
+        // Function to detonate a mine
+        function detonateMine(mine) {
+            // Create explosion effect
+            createExplosionEffect(
+                mine.position.clone(),
+                0xFF5500, // Orange explosion
+                3 // Large explosion
+            );
+
+            // Apply damage to enemies in blast radius
+            for (let i = enemies.length - 1; i >= 0; i--) {
+                const enemy = enemies[i];
+                const distance = enemy.position.distanceTo(mine.position);
+
+                if (distance <= mine.userData.radius) {
+                    // Calculate damage based on distance (full damage at center, less at edges)
+                    const damageRatio = 1 - (distance / mine.userData.radius);
+                    const damage = Math.round(mine.userData.damage * damageRatio);
+
+                    // Apply damage
+                    enemy.userData.health -= damage;
+
+                    // Check if enemy is destroyed
+                    if (enemy.userData.health <= 0) {
+                        // Special destruction effect for special tanks
+                        if (enemy.userData.type === 'golden') {
+                            createExplosionEffect(
+                                enemy.position.clone(),
+                                TANK_TYPES.GOLDEN.destroyEffect.color,
+                                TANK_TYPES.GOLDEN.destroyEffect.size
+                            );
+                        }
+
+                        // Remove enemy
+                        scene.remove(enemy);
+                        enemies.splice(i, 1);
+
+                        // Increase score and update stats
+                        const scoreAmount = enemy.userData.scoreValue;
+                        score += scoreAmount;
+                        document.getElementById('score').textContent = 'Score: ' + score;
+
+                        // Show score popup
+                        showScorePopup(enemy.position.x, enemy.position.y, enemy.position.z, scoreAmount);
+
+                        // Update stats
+                        gameStats.enemiesDestroyed++;
+                        if (enemy.userData.type === 'golden') {
+                            gameStats.goldenTanksDestroyed++;
+                        }
+                        updateStats();
+                    }
+                }
+            }
+
+            // Apply damage to player if in blast radius
+            const playerDistance = playerTank.position.distanceTo(mine.position);
+            if (playerDistance <= mine.userData.radius) {
+                // Player takes less damage from own mines
+                const damageRatio = (1 - (playerDistance / mine.userData.radius)) * 0.5;
+                const damage = Math.round(mine.userData.damage * damageRatio);
+
+                if (damage > 0) {
+                    playerTank.userData.health -= damage;
+                    showDamageIndicator(damage);
+
+                    // Check if player is defeated
+                    if (playerTank.userData.health <= 0) {
+                        // Game over
+                        gameOver = true;
+                        gameStats.gameTime = Date.now() - gameStats.startTime;
+                        updateStats();
+                        document.getElementById('info').textContent = 'Game Over! Press \\ to restart';
+                    }
+                }
+            }
+
+            // Remove the mine
+            scene.remove(mine);
+            const index = window.mines.indexOf(mine);
+            if (index !== -1) {
+                window.mines.splice(index, 1);
+            }
+        }
+
+        // Function to show a power-up message
+        function showPowerupMessage(message, color) {
+            const messageElement = document.createElement('div');
+            messageElement.style.position = 'absolute';
+            messageElement.style.top = '120px';
+            messageElement.style.width = '100%';
+            messageElement.style.textAlign = 'center';
+            messageElement.style.color = color;
+            messageElement.style.fontSize = '28px';
+            messageElement.style.fontWeight = 'bold';
+            messageElement.style.textShadow = '2px 2px 4px rgba(0, 0, 0, 0.7)';
+            messageElement.style.pointerEvents = 'none';
+            messageElement.textContent = message;
+            document.body.appendChild(messageElement);
+
+            // Animate and remove
+            let opacity = 1;
+            let posY = 120;
+
+            const animateMessage = () => {
+                opacity -= 0.01;
+                posY -= 0.5;
+
+                messageElement.style.opacity = opacity;
+                messageElement.style.top = `${posY}px`;
+
+                if (opacity > 0) {
+                    requestAnimationFrame(animateMessage);
+                } else {
+                    document.body.removeChild(messageElement);
+                }
+            };
+
+            requestAnimationFrame(animateMessage);
+        }
+
+        // Function to show damage indicator
+        function showDamageIndicator(amount) {
+            // Flash the screen red
+            const flashElement = document.createElement('div');
+            flashElement.style.position = 'absolute';
+            flashElement.style.top = '0';
+            flashElement.style.left = '0';
+            flashElement.style.width = '100%';
+            flashElement.style.height = '100%';
+            flashElement.style.backgroundColor = 'rgba(255, 0, 0, 0.3)';
+            flashElement.style.pointerEvents = 'none';
+            flashElement.style.zIndex = '1000';
+            document.body.appendChild(flashElement);
+
+            // Show damage amount
+            const damageText = document.createElement('div');
+            damageText.style.position = 'absolute';
+            damageText.style.top = '40%';
+            damageText.style.width = '100%';
+            damageText.style.textAlign = 'center';
+            damageText.style.color = '#FF0000';
+            damageText.style.fontSize = '24px';
+            damageText.style.fontWeight = 'bold';
+            damageText.style.textShadow = '2px 2px 4px rgba(0, 0, 0, 0.7)';
+            damageText.textContent = `-${amount}`;
+            document.body.appendChild(damageText);
+
+            // Fade out
+            setTimeout(() => {
+                let opacity = 0.3;
+                const fadeInterval = setInterval(() => {
+                    opacity -= 0.05;
+                    if (opacity <= 0) {
+                        clearInterval(fadeInterval);
+                        document.body.removeChild(flashElement);
+                        document.body.removeChild(damageText);
+                    } else {
+                        flashElement.style.backgroundColor = `rgba(255, 0, 0, ${opacity})`;
+                        damageText.style.opacity = opacity + 0.3;
+                    }
+                }, 50);
+            }, 200);
+        }
+
+        // Initialize inventory display
+        function initializeInventoryDisplay() {
+            const inventoryContainer = document.getElementById('inventory');
+            inventoryContainer.innerHTML = '';
+
+            // Create 10 slots (1-0 keys)
+            for (let i = 0; i < 10; i++) {
+                const slot = document.createElement('div');
+                slot.className = 'inventory-slot';
+
+                const keyLabel = document.createElement('div');
+                keyLabel.className = 'key';
+                keyLabel.textContent = i === 9 ? '0' : (i + 1).toString();
+                slot.appendChild(keyLabel);
+
+                const countLabel = document.createElement('div');
+                countLabel.className = 'count';
+                slot.appendChild(countLabel);
+
+                inventoryContainer.appendChild(slot);
+            }
+
+            updateInventoryDisplay();
+        }
+
+        // Update inventory display
+        function updateInventoryDisplay() {
+            const slots = document.querySelectorAll('.inventory-slot');
+
+            for (let i = 0; i < inventory.slots.length; i++) {
+                const slot = slots[i];
+                const item = inventory.slots[i];
+
+                // Reset classes
+                slot.className = 'inventory-slot';
+
+                if (item.type) {
+                    // Add item type class
+                    slot.classList.add(item.type);
+
+                    // Add icon or text for item type
+                    slot.innerHTML = '';
+                    const icon = document.createElement('div');
+
+                    if (item.type === 'speed') {
+                        icon.textContent = '⚡';
+                    } else if (item.type === 'mine') {
+                        icon.textContent = '💣';
+                    } else if (item.type === 'heatseeker') {
+                        icon.textContent = '🚀';
+                    } else {
+                        icon.textContent = '?';
+                    }
+
+                    slot.appendChild(icon);
+
+                    // Add key label
+                    const keyLabel = document.createElement('div');
+                    keyLabel.className = 'key';
+                    keyLabel.textContent = i === 9 ? '0' : (i + 1).toString();
+                    slot.appendChild(keyLabel);
+
+                    // Add count if more than 1
+                    if (item.count > 1) {
+                        const countLabel = document.createElement('div');
+                        countLabel.className = 'count';
+                        countLabel.textContent = item.count;
+                        slot.appendChild(countLabel);
+                    }
+                } else {
+                    // Empty slot
+                    slot.innerHTML = '';
+                    const keyLabel = document.createElement('div');
+                    keyLabel.className = 'key';
+                    keyLabel.textContent = i === 9 ? '0' : (i + 1).toString();
+                    slot.appendChild(keyLabel);
+
+                    const countLabel = document.createElement('div');
+                    countLabel.className = 'count';
+                    slot.appendChild(countLabel);
+                }
+            }
+        }
+
+        // Collect powerup function - modified for inventory
+        function collectPowerup(powerup) {
+            const type = powerup.userData.powerupType;
+            console.log("Collecting powerup type:", type);
+            console.log("Is this type storable?", activePowerups[type] && activePowerups[type].storable);
+
+            // Check if this is a storable powerup type
+            if (activePowerups[type] && activePowerups[type].storable) {
+                // Add to inventory
+                if (inventory.addItem(type)) {
+                    // Success message
+                    showNotification(`${type.charAt(0).toUpperCase() + type.slice(1)} added to inventory`);
+                } else {
+                    // Inventory full - apply immediately
+                    console.log("Inventory full, applying immediately");
+                    applyPowerup(type);
+                }
+            } else {
+                // Apply non-storable powerups immediately
+                console.log("Non-storable powerup, applying immediately");
+                applyPowerup(type);
+            }
+
+            // Remove the powerup object
+            scene.remove(powerup);
+            const index = powerups.indexOf(powerup);
+            if (index !== -1) {
+                powerups.splice(index, 1);
+            }
+
+            // Update inventory display
+            updateInventoryDisplay();
+        }
+
+        // Show notification message
+        function showNotification(message) {
+            const notification = document.createElement('div');
+            notification.style.position = 'absolute';
+            notification.style.top = '100px';
+            notification.style.left = '50%';
+            notification.style.transform = 'translateX(-50%)';
+            notification.style.backgroundColor = 'rgba(0, 0, 0, 0.7)';
+            notification.style.color = 'white';
+            notification.style.padding = '10px 15px';
+            notification.style.borderRadius = '5px';
+            notification.style.fontFamily = 'Arial, sans-serif';
+            notification.style.zIndex = '1000';
+            notification.textContent = message;
+
+            document.body.appendChild(notification);
+
+            // Remove after 3 seconds
+            setTimeout(() => {
+                notification.style.opacity = '0';
+                notification.style.transition = 'opacity 0.5s';
+                setTimeout(() => {
+                    document.body.removeChild(notification);
+                }, 500);
+            }, 3000);
+        }
+
+
+
+        // Create heat-seeking missile function
+        function createHeatSeekingMissile(position, direction, isPlayerMissile, firingTank) {
+            // Create missile body
+            const missileGroup = new THREE.Group();
+
+            // Missile body
+            const missileGeometry = new THREE.CylinderGeometry(0.15, 0.25, 1.2, 8);
+            const missileMaterial = new THREE.MeshStandardMaterial({
+                color: 0xFF6600,
+                emissive: 0xFF4400,
+                emissiveIntensity: 0.5
+            });
+            const missileBody = new THREE.Mesh(missileGeometry, missileMaterial);
+            missileBody.rotation.x = Math.PI / 2;
+            missileGroup.add(missileBody);
+
+            // Missile fins
+            const finGeometry = new THREE.BoxGeometry(0.5, 0.1, 0.3);
+            const finMaterial = new THREE.MeshStandardMaterial({ color: 0xCCCCCC });
+
+            for (let i = 0; i < 4; i++) {
+                const fin = new THREE.Mesh(finGeometry, finMaterial);
+                fin.position.set(0, 0, -0.4);
+                fin.rotation.y = (Math.PI / 2) * i;
+                missileGroup.add(fin);
+            }
+
+            // Position at the launching position
+            missileGroup.position.copy(position);
+            missileGroup.position.add(direction.clone().multiplyScalar(2.5));
+            missileGroup.position.y = 1.375; // Same height as the tank barrel
+
+            // Rotate to match initial direction
+            missileGroup.rotation.y = Math.atan2(direction.x, direction.z);
+
+            // Create trailing smoke particles
+            const createSmokeTrail = () => {
+                const smokeParticle = new THREE.Mesh(
+                    new THREE.SphereGeometry(0.1 + Math.random() * 0.1, 8, 8),
+                    new THREE.MeshBasicMaterial({
+                        color: 0x888888,
+                        transparent: true,
+                        opacity: 0.7
+                    })
+                );
+
+                smokeParticle.position.copy(missileGroup.position);
+                // Add slight randomness to smoke position
+                smokeParticle.position.x += (Math.random() - 0.5) * 0.1;
+                smokeParticle.position.y += (Math.random() - 0.5) * 0.1;
+                smokeParticle.position.z += (Math.random() - 0.5) * 0.1;
+
+                smokeParticle.userData = {
+                    velocity: new THREE.Vector3((Math.random() - 0.5) * 0.02, 0.01, (Math.random() - 0.5) * 0.02),
+                    life: 20 + Math.floor(Math.random() * 15)
+                };
+
+                scene.add(smokeParticle);
+                return smokeParticle;
+            };
+
+            // Smoke trail particles
+            const smokeTrail = [];
+
+            // Missile data
+            missileGroup.userData = {
+                direction: direction.clone().normalize(),
+                speed: activePowerups.heatseeker.speed,
+                isPlayerBullet: isPlayerMissile,
+                isHeatSeeker: true,
+                damage: activePowerups.heatseeker.damage,
+                lifeTime: 0,
+                maxLifeTime: 200, // Longer life than regular bullets
+                target: null, // Will be set to the nearest enemy
+                smokeParticles: smokeTrail, // Store reference to all smoke particles
+                updateTrail: function() {
+                    // Add new smoke particle every few frames
+                    if (this.lifeTime % 3 === 0) {
+                        smokeTrail.push(createSmokeTrail());
+                    }
+
+                    // Update existing smoke particles
+                    for (let i = smokeTrail.length - 1; i >= 0; i--) {
+                        const particle = smokeTrail[i];
+                        particle.position.add(particle.userData.velocity);
+                        particle.userData.life--;
+                        particle.material.opacity = particle.userData.life / 20;
+
+                        if (particle.userData.life <= 0) {
+                            scene.remove(particle);
+                            smokeTrail.splice(i, 1);
+                        }
+                    }
+                },
+                // Add cleanup function for smoke trail
+                cleanupTrail: function() {
+                    console.log("Cleaning up smoke trail");
+                    // Remove all smoke particles
+                    for (const particle of this.smokeParticles) {
+                        scene.remove(particle);
+                    }
+                    this.smokeParticles.length = 0;
+                }
+            };
+
+            scene.add(missileGroup);
+            bullets.push(missileGroup); // Add to bullets array for tracking
+
+            // Play missile launch sound if available
+            // playSound('missile_launch');
+
+            return missileGroup;
+        }
+
+        // Fire heat-seeking missile function
+        function fireHeatSeekingMissile(tank) {
+            // Use the tank's facing direction for initial launch
+            const direction = tank.userData.direction.clone();
+            const missile = createHeatSeekingMissile(tank.position.clone(), direction, tank.userData.isPlayer, tank);
+
+            // Find enemy in player's facing direction
+            if (missile.userData.isPlayerBullet && enemies.length > 0) {
+                let bestTarget = null;
+                let bestScore = -1; // Higher score = better target
+
+                // Get player's facing direction
+                const playerDirection = tank.userData.direction.clone().normalize();
+
+                for (const enemy of enemies) {
+                    // Vector from player to enemy
+                    const toEnemy = new THREE.Vector3().subVectors(enemy.position, tank.position).normalize();
+
+                    // Calculate dot product - higher value means enemy is more in front of player
+                    // Dot product ranges from -1 (behind) to 1 (directly in front)
+                    const dotProduct = playerDirection.dot(toEnemy);
+
+                    // Only consider enemies in front of the player (within ~60 degree cone)
+                    if (dotProduct > 0.5) {
+                        // Calculate distance factor (closer is better, but not the only factor)
+                        const distance = enemy.position.distanceTo(tank.position);
+                        const distanceFactor = 100 / (distance + 10); // Normalize distance
+
+                        // Calculate targeting score: prioritize enemies in front, with distance as secondary factor
+                        const targetingScore = (dotProduct * 3) + distanceFactor;
+
+                        // Update best target if this one is better
+                        if (targetingScore > bestScore) {
+                            bestScore = targetingScore;
+                            bestTarget = enemy;
+                        }
+                    }
+                }
+
+                // If we found a suitable target in front of the player
+                if (bestTarget) {
+                    missile.userData.target = bestTarget;
+
+                    // Visual feedback - highlight targeted enemy
+                    createTargetingEffect(bestTarget);
+                } else {
+                    // Fallback -- it will just go in the direction it is facing
+                }
+            }
+
+            return missile;
+        }
+
+        // Create a visual effect to show which enemy is being targeted
+        function createTargetingEffect(target) {
+            // Create a targeting ring
+            const ringGeometry = new THREE.RingGeometry(1.5, 1.7, 32);
+            const ringMaterial = new THREE.MeshBasicMaterial({
+                color: 0xFF6600,
+                side: THREE.DoubleSide,
+                transparent: true,
+                opacity: 0.8
+            });
+
+            const targetRing = new THREE.Mesh(ringGeometry, ringMaterial);
+            targetRing.position.copy(target.position);
+            targetRing.position.y = 0.5;
+            targetRing.rotation.x = Math.PI / 2; // Horizontal ring
+
+            scene.add(targetRing);
+
+            // Animate and remove the targeting effect
+            let scale = 0.5;
+            let opacity = 1.0;
+
+            function animateTargeting() {
+                scale += 0.04;
+                opacity -= 0.02;
+
+                targetRing.scale.set(scale, scale, scale);
+                ringMaterial.opacity = opacity;
+
+                if (opacity > 0) {
+                    requestAnimationFrame(animateTargeting);
+                } else {
+                    scene.remove(targetRing);
+                }
+            }
+
+            animateTargeting();
+        }
+
+
+        // Helper function to remove a bullet and clean up its effects
+        function removeBullet(bullet, index) {
+          // Clean up smoke trail if it's a heat-seeking missile
+          if (bullet.userData && bullet.userData.isHeatSeeker && bullet.userData.cleanupTrail) {
+              bullet.userData.cleanupTrail();
+          }
+
+          // Remove bullet from scene
+          scene.remove(bullet);
+
+          // Remove bullet from bullets array
+          bullets.splice(index, 1);
+        }
+
+        // Start the game
+        resetGame();
+        animate();
+    </script>
+</body>
+</html>
+
