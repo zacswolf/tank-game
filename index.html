@@ -149,6 +149,11 @@
     <div id="inventory">
         <!-- Inventory slots will be added dynamically -->
     </div>
+    <div id="difficulty-menu" style="display: none; position: fixed; top: 50%; left: 50%; transform: translate(-50%, -50%); background: rgba(0, 0, 0, 0.9); padding: 20px; border-radius: 10px; color: white; text-align: center;">
+        <h2>Select Difficulty</h2>
+        <button onclick="setDifficulty('easy')" style="margin: 10px; padding: 10px 20px; background: #4CAF50; border: none; color: white; cursor: pointer; border-radius: 5px;">Easy</button>
+        <button onclick="setDifficulty('hard')" style="margin: 10px; padding: 10px 20px; background: #f44336; border: none; color: white; cursor: pointer; border-radius: 5px;">Hard</button>
+    </div>
     <script src="https://cdnjs.cloudflare.com/ajax/libs/three.js/r128/three.min.js"></script>
     <script>
         // Game state
@@ -165,7 +170,22 @@
             supplyCratesOpened: 0,    // Track supply crates opened
             powerupsCollected: 0      // Track power-ups collected
         };
-        const MAX_ENEMIES = 10;
+        const DEFAULT_MAX_ENEMIES = 10;
+        let currentMaxEnemies = DEFAULT_MAX_ENEMIES; // Variable to store current difficulty setting
+
+        // Difficulty menu handling
+        document.addEventListener('keydown', function(event) {
+            if (event.key === 'Escape') {
+                const menu = document.getElementById('difficulty-menu');
+                menu.style.display = menu.style.display === 'none' ? 'block' : 'none';
+            }
+        });
+
+        function setDifficulty(level) {
+            currentMaxEnemies = level === 'easy' ? 5 : 10;
+            document.getElementById('difficulty-menu').style.display = 'none';
+            console.log(`Difficulty set to ${level} (${currentMaxEnemies} max enemies)`);
+        }
 
         // Inventory system
         const inventory = {
@@ -1579,7 +1599,7 @@
 
         // Refactored spawn enemy function
         function spawnEnemy(tankType) {
-            if (enemies.length >= MAX_ENEMIES || gameOver) return; // Limit number of enemies
+            if (enemies.length >= currentMaxEnemies || gameOver) return; // Limit number of enemies
 
             const enemy = createTank(tankType);
 
